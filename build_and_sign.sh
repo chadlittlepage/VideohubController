@@ -98,10 +98,12 @@ rm -f "${ZIP_PATH}"
 
 # ----- 5. Build the DMG ----------------------------------------------------
 
-echo "==> Building DMG..."
+echo "==> Building DMG via dmgbuild..."
 rm -f "${DMG_PATH}"
 
-if command -v create-dmg &>/dev/null; then
+if python3 -c "import dmgbuild" 2>/dev/null; then
+    python3 -m dmgbuild -s dmg_settings.py "Videohub Controller" "${DMG_PATH}"
+elif command -v create-dmg &>/dev/null; then
     create-dmg \
         --volname "${DMG_NAME}" \
         --window-pos 200 120 \
