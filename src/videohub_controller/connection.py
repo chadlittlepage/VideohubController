@@ -33,6 +33,7 @@ class VideohubConnection:
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
         self._stop = threading.Event()
+        self.lock = threading.Lock()
 
     def connect(self, ip: str) -> bool | str:
         """Connect to the Videohub. Returns True on success, error string on failure."""
@@ -88,28 +89,38 @@ class VideohubConnection:
         header = lines[0].rstrip(":")
         data = lines[1:]
 
-        if header == "INPUT LABELS":
-            for line in data:
-                parts = line.split(" ", 1)
-                if len(parts) == 2:
-                    idx = int(parts[0])
-                    if 0 <= idx < NUM_IO:
-                        self.input_labels[idx] = parts[1]
-        elif header == "OUTPUT LABELS":
-            for line in data:
-                parts = line.split(" ", 1)
-                if len(parts) == 2:
-                    idx = int(parts[0])
-                    if 0 <= idx < NUM_IO:
-                        self.output_labels[idx] = parts[1]
-        elif header == "VIDEO OUTPUT ROUTING":
-            for line in data:
-                parts = line.split(" ", 1)
-                if len(parts) == 2:
-                    out_idx = int(parts[0])
-                    in_idx = int(parts[1])
-                    if 0 <= out_idx < NUM_IO and 0 <= in_idx < NUM_IO:
-                        self.routing[out_idx] = in_idx
+        with self.lock:
+            if header == "INPUT LABELS":
+                for line in data:
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2:
+                        try:
+                            idx = int(parts[0])
+                        except ValueError:
+                            continue
+                        if 0 <= idx < NUM_IO:
+                            self.input_labels[idx] = parts[1]
+            elif header == "OUTPUT LABELS":
+                for line in data:
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2:
+                        try:
+                            idx = int(parts[0])
+                        except ValueError:
+                            continue
+                        if 0 <= idx < NUM_IO:
+                            self.output_labels[idx] = parts[1]
+            elif header == "VIDEO OUTPUT ROUTING":
+                for line in data:
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2:
+                        try:
+                            out_idx = int(parts[0])
+                            in_idx = int(parts[1])
+                        except ValueError:
+                            continue
+                        if 0 <= out_idx < NUM_IO and 0 <= in_idx < NUM_IO:
+                            self.routing[out_idx] = in_idx
 
         if self.on_state_update:
             self.on_state_update()
@@ -124,21 +135,23 @@ class VideohubConnection:
             pass
 
     def set_input_label(self, idx: int, label: str) -> None:
+        with self.lock:
+            self.input_labels[idx] = label
         if not self.connected:
             return
         cmd = f"INPUT LABELS:\n{idx} {label}\n\n"
         try:
             self.sock.sendall(cmd.encode("utf-8"))
-            self.input_labels[idx] = label
         except Exception:
             pass
 
     def set_output_label(self, idx: int, label: str) -> None:
+        with self.lock:
+            self.output_labels[idx] = label
         if not self.connected:
             return
         cmd = f"OUTPUT LABELS:\n{idx} {label}\n\n"
         try:
             self.sock.sendall(cmd.encode("utf-8"))
-            self.output_labels[idx] = label
         except Exception:
             pass

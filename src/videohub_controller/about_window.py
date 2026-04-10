@@ -32,7 +32,7 @@ from Quartz import CGColorCreateGenericRGB
 
 from videohub_controller import __version__
 
-_RETAINED = []
+_RETAINED = []  # singleton — only keep the latest window
 
 
 def _find_asset(name: str) -> Path | None:
@@ -148,4 +148,5 @@ def show_about_window() -> None:
     else:
         NSApp.activateIgnoringOtherApps_(True)
 
+    _RETAINED.clear()
     _RETAINED.append((controller, window))

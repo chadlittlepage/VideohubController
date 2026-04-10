@@ -27,18 +27,19 @@ from AppKit import (
     NSWindowStyleMaskTitled,
 )
 
-_RETAINED = []
+_RETAINED = []  # singleton — only keep the latest window
 
 
 MANUAL_TEXT = """\
-Videohub Controller - User Manual
-==================================
+Videohub Controller v0.2.0 - User Manual
+==========================================
 
 OVERVIEW
 Videohub Controller is a native macOS application for controlling
 a Blackmagic Videohub 10x10 SDI router over Ethernet. It provides
-a crosspoint matrix GUI, editable input/output labels, and routing
-presets (salvos) - all in a single window.
+a crosspoint matrix GUI, editable input/output labels, routing
+presets with hotkey recall, a hardware-style LCD display, and
+customizable font sizes - all in a single window.
 
 When you click a cell in the matrix, the routing command is sent
 over TCP to the Videohub hardware. The front panel LEDs update
@@ -55,6 +56,31 @@ GETTING STARTED
    current state.
 
 
+LCD DISPLAY
+The center of the title bar features a simulated LCD display
+that mirrors the information shown on the Videohub hardware's
+built-in screen.
+
+When idle:
+  Shows "VIDEOHUB 10x10 12G" and "No route selected"
+
+When a route is selected:
+  Top row:    Source number and label name
+  Bottom row: Destination number and label name
+
+  Example:
+    02 | SRC     Camera 1
+    -------------------------
+    01 | DEST    Monitor A
+
+The LCD updates live when you:
+  - Click a crosspoint cell in the matrix
+  - Recall a preset (via button, hotkey, or click)
+  - Rename an input or output label
+
+The display font size is adjustable in Settings.
+
+
 CROSSPOINT MATRIX
 The 10x10 grid represents all possible input-to-output routes.
 
@@ -69,7 +95,11 @@ To change a route:
   The previous route on that output is replaced immediately.
   The hardware LEDs update at the same time.
 
-Cells always stay square and yellow regardless of window focus.
+Crosshair guides:
+  When you hover over the grid, yellow crosshair lines appear
+  showing which input column and output row you are targeting.
+  The crosshairs remain visible after clicking a cell to
+  confirm the selected route.
 
 
 INPUT / OUTPUT LABELS
@@ -79,33 +109,99 @@ Videohub hardware itself.
 
 To rename:
   1. Click a label field and type the new name.
-  2. Press Return or Enter to confirm.
-  3. The name is sent to the Videohub and stored on the hardware.
+  2. Press Return/Enter to confirm, or Tab to the next field.
+  3. The name is sent to the Videohub and the LCD display
+     updates immediately.
 
-Label names are persistent on the Videohub - they survive
-power cycles and are visible to all connected clients
-(including Blackmagic's own software).
+Label names are saved locally and sent to the Videohub when
+connected. They persist across app restarts.
 
 
 PRESETS (SALVOS)
 Presets let you save and recall complete routing snapshots.
 
-  Save:   Type a name in the Presets dropdown, click Save.
-          A dialog appears to confirm the name. The current
-          routing table + all labels are stored to disk.
+  Save:   Click Save. A dialog appears to name the preset.
+          The current routing table is stored to disk.
 
   Recall: Select a preset from the dropdown, click Recall.
-          All 10 routes are sent to the Videohub in sequence.
-          The hardware LEDs update as each route is applied.
+          All 10 routes are applied. The grid, LCD display,
+          and hardware LEDs update. Works offline too -
+          the grid updates locally and routes are sent to
+          hardware when connected.
 
-  Delete: Select a preset, click Delete. The preset is
-          removed from disk.
+  Delete: Select a preset, click Delete. A confirmation
+          dialog appears. If the preset was assigned to a
+          hotkey, the hotkey binding is also cleared.
 
-Presets are saved to:
+The preset dropdown shows hotkey assignments:
+  [1]  Studio A     (assigned to key 1)
+  [2]  Show Mode    (assigned to key 2)
+  Camera Setup      (no hotkey)
+
+
+HOTKEY PRESETS (1-0)
+Assign any preset to keyboard keys 1 through 0 for instant
+one-touch recall. There are 10 slots total.
+
+Setup:
+  1. Open Settings (Cmd+,)
+  2. Under "Hotkey Presets", use the dropdown for each key
+     to select a preset (or "None" to clear)
+  3. Changes take effect immediately
+
+Using hotkeys:
+  - Press 1-9 or 0 on the keyboard to instantly recall
+    the assigned preset
+  - Click the number indicators in the matrix title area
+    for the same effect
+  - Hotkeys only work when no text field is focused.
+    Click the grid or press Escape to deactivate text fields.
+
+Hotkey indicator states (in the matrix title area):
+  Grey background   = No preset assigned
+  Yellow background  = Preset assigned, not active
+  Green background   = Preset currently active
+
+The preset dropdown and hotkey indicator update together.
+Recalling via the Recall button also highlights the
+corresponding hotkey number in green.
+
+
+SETTINGS (Cmd+,)
+Open from the app menu or press Cmd+, to customize:
+
+Font Sizes:
+  Display Font Size         Scales the LCD display and
+                            title bar height
+  Input/Output Labels       Scales the label text in the
+                            left panel
+  Grid IN/OUT Headers       Scales the IN/OUT column and
+                            row headers
+
+  All sliders are live - changes apply instantly.
+  The window grows automatically to fit larger fonts.
+
+Hotkey Presets:
+  Assign presets to keys 1-0 for instant recall.
+  See "HOTKEY PRESETS" section above.
+
+All settings persist across app restarts.
+
+
+SESSION PERSISTENCE
+Everything is saved when you quit and restored on relaunch:
+
+  - IP address
+  - Input and output labels
+  - Full routing grid state
+  - Selected preset in dropdown
+  - Active hotkey (green indicator)
+  - LCD display state
+  - All font size settings
+  - All hotkey bindings
+
+All data is stored in:
   ~/.videohub_controller.json
-
-The last-used IP address is also saved here and auto-filled
-on next launch.
 
 
 CONNECTION STATUS
@@ -126,14 +222,47 @@ the status updates to Disconnected. Click Connect to
 reconnect.
 
 
-RESIZING
+RESIZING AND FULL SCREEN
 The window is fully resizable:
-  - Labels panel stays pinned to the top-left
+  - Labels panel stays pinned to the left
   - Matrix cells stay square at all sizes
-  - The window cannot be shrunk smaller than the label
-    content height
+  - The window grows automatically when the display font
+    size increases
+
+Full screen mode: Press Cmd+F or use View > Enter Full Screen.
+The entire layout scales to fill the screen.
 
 The minimum window width is 900 pixels.
+
+
+MENU BAR
+
+App menu (Videohub Controller):
+  About               About window
+  Settings... (Cmd+,) Font sizes and hotkey bindings
+  Hide (Cmd+H)        Hide the application
+  Hide Others         Hide all other applications
+  Show All            Show all hidden applications
+  Quit (Cmd+Q)        Quit the application
+
+View menu:
+  Enter Full Screen (Cmd+F)
+
+Help menu:
+  Videohub Controller Help  Opens this manual
+  Export Console Log...     Saves the session log for
+                            debugging
+
+
+KEYBOARD SHORTCUTS
+  Cmd+Q          Quit
+  Cmd+H          Hide
+  Cmd+F          Toggle full screen
+  Cmd+,          Open Settings
+  1-9, 0         Recall hotkey preset (when no text
+                 field is focused)
+  Return/Enter   Confirm label rename
+  Tab            Move to next label field
 
 
 VIDEOHUB PROTOCOL
@@ -147,21 +276,10 @@ Multiple clients can connect simultaneously. All clients
 see the same state and receive the same updates.
 
 Supported Videohub models:
-  - Videohub 10x10 (primary target)
+  - Videohub 10x10 12G (primary target)
   - Any Blackmagic Videohub with 10 or fewer I/O
   - Larger models will work but only the first 10 I/O
     are shown
-
-
-MENU BAR
-
-App menu (Videohub Controller):
-  Quit (Cmd+Q) - close the application
-
-Help menu:
-  Videohub Controller Help - opens this manual
-  Export Console Log...    - saves the session log file
-                             for debugging
 
 
 CONSOLE LOG
@@ -211,6 +329,12 @@ Matrix doesn't reflect hardware changes
   - If it stops updating, the connection may have dropped -
     check the status dot and reconnect
 
+Hotkeys not working
+  - Click the grid area or anywhere outside a text field
+    to deactivate text input. Number keys are passed to
+    text fields when one is focused.
+  - Verify the preset is assigned in Settings > Hotkey Presets
+
 App won't open (Gatekeeper warning)
   Right-click the app and choose Open. This bypasses
   Gatekeeper for the first launch on unsigned builds.
@@ -218,17 +342,12 @@ App won't open (Gatekeeper warning)
 
 FILE LOCATIONS
 ~/.videohub_controller.json
-    Presets and last-used IP address
+    Presets, session state, settings, and last-used IP
 
 ~/Library/Application Support/Videohub Controller/
     logs/
         console.log         Current session log
         console.log.old     Previous archive
-
-
-KEYBOARD SHORTCUTS
-  Cmd+Q          Quit
-  Return/Enter   Confirm label rename (deselects field)
 
 
 CREDITS
@@ -322,4 +441,5 @@ def show_manual_window() -> None:
     else:
         NSApp.activateIgnoringOtherApps_(True)
 
+    _RETAINED.clear()
     _RETAINED.append((controller, window))
