@@ -319,11 +319,20 @@ Can't connect
   - macOS 15 requires Local Network permission for the app.
     After installing a new build, macOS may silently invalidate
     the permission even though the toggle appears ON.
-  - Fix: Go to System Settings > Privacy & Security > Local
-    Network, toggle Videohub Controller OFF, then back ON.
-    This re-grants the permission for the new code signature.
+  - The app automatically opens System Settings > Privacy &
+    Security > Local Network when this happens. Just toggle
+    Videohub Controller OFF, then back ON, and click Connect
+    again.
   - This is a known macOS 15 behavior that occurs when the
     app binary is re-signed.
+
+Installing the app
+  - Drag the .app from the DMG to /Applications. This requires
+    an admin account on the Mac.
+  - Non-admin users: ask an admin to install it once, or run:
+      sudo cp -R "/Volumes/Videohub Controller/Videohub Controller.app" /Applications/
+  - Alternatively, drag to ~/Applications (user-only) or Desktop
+    to run without admin privileges.
 
 Connection drops frequently
   - Check your Ethernet cable

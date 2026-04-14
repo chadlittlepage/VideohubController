@@ -855,11 +855,17 @@ class AppController(NSObject):
 
     def connectionFailed_(self, msg):
         self.connect_btn.setEnabled_(True)
-        if "No route to host" in str(msg) or "Network is unreachable" in str(msg):
+        msg_str = str(msg)
+        if "No route to host" in msg_str or "Network is unreachable" in msg_str:
             self.set_status(
                 "Connection failed: No route to host. "
-                "Try toggling Local Network OFF/ON in System Settings > Privacy & Security."
+                "Toggle Local Network OFF/ON — opening Settings..."
             )
+            # Open System Settings directly to Local Network privacy pane
+            import subprocess
+            subprocess.Popen([
+                "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
+            ])
         else:
             self.set_status(f"Connection failed: {msg}")
 

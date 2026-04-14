@@ -124,11 +124,24 @@ All settings apply instantly and persist across restarts.
 
 **"No route to host" after updating the app**
 
-macOS 15 requires Local Network permission for the app. After installing a new build, macOS may silently invalidate the permission even though the toggle appears ON. Fix: System Settings > Privacy & Security > Local Network, toggle Videohub Controller OFF then back ON.
+macOS 15 requires Local Network permission for the app. After installing a new build, macOS may silently invalidate the permission even though the toggle appears ON. The app automatically opens System Settings to the right page when this happens -- just toggle Videohub Controller OFF then back ON and click Connect again.
 
 **Can't connect**
 
 Verify the Videohub is powered on and on the same network. The app retries automatically (3 attempts with 1-second delays). Check the console log (Help > Export Console Log) for detailed connection diagnostics.
+
+**"Items had to be skipped" when installing**
+
+Dragging to /Applications requires an admin account. Options for non-admin users:
+- Ask an admin to install once: `sudo cp -R "/Volumes/Videohub Controller/Videohub Controller.app" /Applications/`
+- Or drag to `~/Applications` or Desktop instead (no admin needed)
+
+**Shared presets across users**
+
+Presets and settings are stored in `/Users/Shared/Videohub Controller/` so all user accounts on the Mac share the same configuration. To install one user's presets as the default for everyone:
+```bash
+cp /Users/TheirUsername/.videohub_controller.json "/Users/Shared/Videohub Controller/videohub_controller.json"
+```
 
 ## Videohub Protocol
 
