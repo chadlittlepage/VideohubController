@@ -15,7 +15,7 @@ chad.littlepage@gmail.com
 from setuptools import setup
 
 APP_NAME = "Videohub Controller"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.1"
 
 BUNDLE_ID = "com.chadlittlepage.videohubcontroller"
 
@@ -37,6 +37,10 @@ OPTIONS = {
         "NSHumanReadableCopyright": "2026 Chad Littlepage",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "15.0",
+        "NSLocalNetworkUsageDescription":
+            "Videohub Controller connects to your Blackmagic Videohub "
+            "router on the local network to control video routing.",
+        "NSBonjourServices": ["_tcp."],
     },
     "packages": [
         "videohub_controller",

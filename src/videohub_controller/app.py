@@ -850,7 +850,13 @@ class AppController(NSObject):
 
     def connectionFailed_(self, msg):
         self.connect_btn.setEnabled_(True)
-        self.set_status(f"Connection failed: {msg}")
+        if "No route to host" in str(msg) or "Network is unreachable" in str(msg):
+            self.set_status(
+                "Connection failed: No route to host. "
+                "Try toggling Local Network OFF/ON in System Settings > Privacy & Security."
+            )
+        else:
+            self.set_status(f"Connection failed: {msg}")
 
     @objc.python_method
     def _on_connect(self):

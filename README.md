@@ -19,6 +19,9 @@ Native macOS routing control application for the Blackmagic Videohub 10x10 SDI r
 - **Real-time connection status** -- green/red indicator dot with automatic detection of connection drops
 - **Resizable and full screen** -- dark native Cocoa GUI with square matrix cells at every window size; Cmd+F for full screen
 - **Copy and paste** -- full Edit menu with Cmd+C/V/X/A for IP address and label fields
+- **Automatic connection retry** -- retries up to 3 times with 1-second delays to handle transient network issues (adapter wake, route not ready)
+- **Verbose connection logging** -- every connection attempt, retry, and error is logged with timestamps to the console log for easy diagnostics
+- **Local Network permission** -- includes `NSLocalNetworkUsageDescription` for macOS 15 Sequoia; status bar guides you to toggle the permission if needed after an app update
 - **Console logging** -- all connection events, route changes, label edits, and errors are captured to a timestamped log file with automatic rotation
 - **In-app manual** -- full user guide accessible from the Help menu
 - **About window** -- version info and credits with background artwork overlay
@@ -114,6 +117,16 @@ All settings apply instantly and persist across restarts.
 | 1-9, 0 | Recall hotkey preset (when no text field is focused) |
 | Return/Enter | Confirm label rename |
 | Tab | Move to next label field |
+
+## Troubleshooting
+
+**"No route to host" after updating the app**
+
+macOS 15 requires Local Network permission for the app. After installing a new build, macOS may silently invalidate the permission even though the toggle appears ON. Fix: System Settings > Privacy & Security > Local Network, toggle Videohub Controller OFF then back ON.
+
+**Can't connect**
+
+Verify the Videohub is powered on and on the same network. The app retries automatically (3 attempts with 1-second delays). Check the console log (Help > Export Console Log) for detailed connection diagnostics.
 
 ## Videohub Protocol
 

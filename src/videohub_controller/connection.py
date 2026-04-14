@@ -35,25 +35,49 @@ class VideohubConnection:
         self._stop = threading.Event()
         self.lock = threading.Lock()
 
-    def connect(self, ip: str) -> bool | str:
-        """Connect to the Videohub. Returns True on success, error string on failure."""
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5)
-            self.sock.connect((ip, VIDEOHUB_PORT))
-            self.sock.settimeout(None)
-            self.connected = True
-            self._stop.clear()
-            t = threading.Thread(target=self._recv_loop, daemon=True)
-            t.start()
-            if self.on_connect:
-                self.on_connect()
-            return True
-        except Exception as e:
-            self.connected = False
-            return str(e)
+    def connect(self, ip: str, retries: int = 3) -> bool | str:
+        """Connect to the Videohub with automatic retry.
+
+        Retries up to `retries` times with a 1-second delay between
+        attempts to handle transient network issues (adapter wake,
+        route not yet established, etc.).
+        Returns True on success, error string on failure.
+        """
+        import time as _time
+        last_error = ""
+        print(f"[connection] Connecting to {ip}:{VIDEOHUB_PORT} (up to {retries} attempts)...")
+        for attempt in range(retries):
+            try:
+                print(f"[connection] Attempt {attempt + 1}/{retries}...")
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(5)
+                self.sock.connect((ip, VIDEOHUB_PORT))
+                self.sock.settimeout(None)
+                self.connected = True
+                self._stop.clear()
+                t = threading.Thread(target=self._recv_loop, daemon=True)
+                t.start()
+                print(f"[connection] Connected to {ip}:{VIDEOHUB_PORT}")
+                if self.on_connect:
+                    self.on_connect()
+                return True
+            except Exception as e:
+                last_error = str(e)
+                print(f"[connection] Attempt {attempt + 1} failed: {last_error}")
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
+                if attempt < retries - 1:
+                    print(f"[connection] Retrying in 1s...")
+                    _time.sleep(1)
+        print(f"[connection] All {retries} attempts failed: {last_error}")
+        self.connected = False
+        return last_error
 
     def disconnect(self) -> None:
+        print("[connection] Disconnecting...")
         self._stop.set()
         self.connected = False
         if self.sock:
@@ -66,11 +90,13 @@ class VideohubConnection:
             self.on_disconnect()
 
     def _recv_loop(self) -> None:
+        print("[connection] Receive loop started")
         buf = ""
         while not self._stop.is_set():
             try:
                 data = self.sock.recv(4096)
                 if not data:
+                    print("[connection] Remote closed connection")
                     break
                 buf += data.decode("utf-8", errors="replace")
                 while "\n\n" in buf:

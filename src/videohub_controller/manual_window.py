@@ -31,7 +31,7 @@ _RETAINED = []  # singleton — only keep the latest window
 
 
 MANUAL_TEXT = """\
-Videohub Controller v0.2.0 - User Manual
+Videohub Controller v0.2.1 - User Manual
 ==========================================
 
 OVERVIEW
@@ -312,6 +312,18 @@ Can't connect
   - Make sure port 9990 is not blocked by a firewall
   - Try pinging the IP from Terminal:
       ping 192.168.1.100
+  - The app retries automatically (3 attempts, 1-second
+    delay between each) to handle transient network issues.
+
+"No route to host" after updating the app
+  - macOS 15 requires Local Network permission for the app.
+    After installing a new build, macOS may silently invalidate
+    the permission even though the toggle appears ON.
+  - Fix: Go to System Settings > Privacy & Security > Local
+    Network, toggle Videohub Controller OFF, then back ON.
+    This re-grants the permission for the new code signature.
+  - This is a known macOS 15 behavior that occurs when the
+    app binary is re-signed.
 
 Connection drops frequently
   - Check your Ethernet cable

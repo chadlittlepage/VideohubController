@@ -1,3 +1,3 @@
 """Videohub Controller - Blackmagic Videohub 10x10 routing GUI."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
