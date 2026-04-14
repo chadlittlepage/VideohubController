@@ -18,7 +18,6 @@ from AppKit import (
     NSPopUpButton,
     NSSlider,
     NSTextField,
-    NSView,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,

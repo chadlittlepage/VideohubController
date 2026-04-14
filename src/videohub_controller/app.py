@@ -979,7 +979,7 @@ class AppController(NSObject):
 
         # Confirmation dialog
         alert = NSAlert.alloc().init()
-        alert.setMessageText_(f'Delete Preset')
+        alert.setMessageText_('Delete Preset')
         alert.setInformativeText_(f'Are you sure you want to delete "{name}"?')
         alert.addButtonWithTitle_("Delete")
         alert.addButtonWithTitle_("Cancel")

@@ -2,6 +2,8 @@
 
 # Videohub Controller
 
+[![CI](https://github.com/chadlittlepage/VideohubController/actions/workflows/ci.yml/badge.svg)](https://github.com/chadlittlepage/VideohubController/actions)
+
 Native macOS routing control application for the Blackmagic Videohub 10x10 SDI router.
 
 ## Features

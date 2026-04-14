@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install ruff
+
+      - name: Ruff lint
+        run: ruff check src/
+
+      - name: Python syntax check
+        run: python -m py_compile src/videohub_controller/app.py &&
+             python -m py_compile src/videohub_controller/connection.py &&
+             python -m py_compile src/videohub_controller/presets.py &&
+             python -m py_compile src/videohub_controller/settings_window.py &&
+             python -m py_compile src/videohub_controller/manual_window.py &&
+             python -m py_compile src/videohub_controller/about_window.py &&
+             python -m py_compile src/videohub_controller/console_log.py &&
+             echo "All files compile OK"

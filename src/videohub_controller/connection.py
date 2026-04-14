@@ -70,7 +70,7 @@ class VideohubConnection:
                     pass
                 self.sock = None
                 if attempt < retries - 1:
-                    print(f"[connection] Retrying in 1s...")
+                    print("[connection] Retrying in 1s...")
                     _time.sleep(1)
         print(f"[connection] All {retries} attempts failed: {last_error}")
         self.connected = False
