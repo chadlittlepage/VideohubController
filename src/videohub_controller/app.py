@@ -364,6 +364,11 @@ class AppController(NSObject):
         min_h = HEADER_H + CONN_BAR_H + labels_content_h + BOTTOM_BAR_H + 50
         self.window.setMinSize_((900, min_h))
         self.window.setBackgroundColor_(BG_DARK)
+        # Force dark appearance so the app looks correct even in light mode
+        from AppKit import NSAppearance
+        dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+        if dark:
+            self.window.setAppearance_(dark)
 
         cv = self.window.contentView()
         cv.setAutoresizesSubviews_(True)
@@ -957,6 +962,7 @@ class AppController(NSObject):
         raw = self.preset_popup.titleOfSelectedItem() or ""
         name_field.setStringValue_(_strip_hotkey_prefix(raw))
         alert.setAccessoryView_(name_field)
+        alert.window().setAppearance_(self.window.appearance())
         result = alert.runModal()
         if result == NSAlertFirstButtonReturn:
             name = name_field.stringValue().strip()
@@ -983,6 +989,7 @@ class AppController(NSObject):
         alert.setInformativeText_(f'Are you sure you want to delete "{name}"?')
         alert.addButtonWithTitle_("Delete")
         alert.addButtonWithTitle_("Cancel")
+        alert.window().setAppearance_(self.window.appearance())
         result = alert.runModal()
         if result != NSAlertFirstButtonReturn:
             return

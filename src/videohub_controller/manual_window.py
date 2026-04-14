@@ -201,7 +201,7 @@ Everything is saved when you quit and restored on relaunch:
   - All hotkey bindings
 
 All data is stored in:
-  ~/.videohub_controller.json
+  /Users/Shared/Videohub Controller/videohub_controller.json
 
 
 CONNECTION STATUS
@@ -353,7 +353,7 @@ App won't open (Gatekeeper warning)
 
 
 FILE LOCATIONS
-~/.videohub_controller.json
+/Users/Shared/Videohub Controller/videohub_controller.json
     Presets, session state, settings, and last-used IP
 
 ~/Library/Application Support/Videohub Controller/

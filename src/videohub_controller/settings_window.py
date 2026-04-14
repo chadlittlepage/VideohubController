@@ -151,6 +151,10 @@ def show_settings_window(controller):
     )
     win.setTitle_("Settings")
     win.setBackgroundColor_(BG_DARK)
+    from AppKit import NSAppearance
+    dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+    if dark:
+        win.setAppearance_(dark)
     win.setReleasedWhenClosed_(False)
 
     cv = win.contentView()

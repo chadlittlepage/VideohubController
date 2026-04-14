@@ -11,7 +11,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".videohub_controller.json"
+# Shared config path readable/writable by all users on the Mac
+_SHARED_DIR = Path("/Users/Shared/Videohub Controller")
+_SHARED_PATH = _SHARED_DIR / "videohub_controller.json"
+
+# Legacy per-user path (migrated on first load)
+_LEGACY_PATH = Path.home() / ".videohub_controller.json"
+
+CONFIG_PATH = _SHARED_PATH
 
 
 class PresetManager:
@@ -25,6 +32,16 @@ class PresetManager:
         self._load()
 
     def _load(self) -> None:
+        # Migrate legacy per-user config to shared location
+        if not CONFIG_PATH.exists() and _LEGACY_PATH.exists():
+            try:
+                _SHARED_DIR.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy2(str(_LEGACY_PATH), str(CONFIG_PATH))
+                print(f"[presets] Migrated config from {_LEGACY_PATH} to {CONFIG_PATH}")
+            except Exception as e:
+                print(f"[presets] Migration failed: {e}")
+
         if CONFIG_PATH.exists():
             try:
                 data = json.loads(CONFIG_PATH.read_text())
@@ -42,6 +59,10 @@ class PresetManager:
             "settings": self.settings,
             "session": self.session,
         }
+        try:
+            _SHARED_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         CONFIG_PATH.write_text(json.dumps(data, indent=2))
 
     def save_session(self, routing: list, input_labels: list, output_labels: list,

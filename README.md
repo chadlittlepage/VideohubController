@@ -157,7 +157,7 @@ Multiple clients (including Blackmagic Videohub Software and Smart Control) can 
 
 | Path | Contents |
 |---|---|
-| `~/.videohub_controller.json` | Presets, session state, settings, hotkey bindings, and last-used IP |
+| `/Users/Shared/Videohub Controller/videohub_controller.json` | Presets, session state, settings, hotkey bindings, and last-used IP (shared by all users) |
 | `~/Library/Application Support/Videohub Controller/logs/console.log` | Current session log |
 | `~/Library/Application Support/Videohub Controller/logs/console.log.old` | Previous archived log |
 
