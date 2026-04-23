@@ -1683,6 +1683,19 @@ class AppController(NSObject):
         self.performSelector_withObject_afterDelay_(
             objc.selector(self.resignFocus_, signature=b"v@:@"), None, 0.1
         )
+        # Auto-connect if we have a saved IP
+        ip = self.ip_field.stringValue().strip()
+        if ip and not self.hub.connected:
+            self.performSelector_withObject_afterDelay_(
+                objc.selector(self._autoConnect_, signature=b"v@:@"), None, 0.5
+            )
+
+    def _autoConnect_(self, _):
+        ip = self.ip_field.stringValue().strip()
+        if ip and not self.hub.connected:
+            self.set_status(f"Auto-connecting to {ip}...")
+            self.connect_btn.setEnabled_(False)
+            threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
 
 
 class AppDelegate(NSObject):
