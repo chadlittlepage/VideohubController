@@ -18,7 +18,6 @@ from AppKit import (
     NSPopUpButton,
     NSSlider,
     NSTextField,
-    NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
@@ -111,6 +110,29 @@ KEY_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 NONE_LABEL = "\u2014 None \u2014"
 
 
+class ToggleDelegate(NSObject):
+    """Handles checkbox toggle for Keep on Top / Global Hotkeys."""
+
+    controller = objc.ivar("controller")
+    setting_key = objc.ivar("setting_key")
+    method_name = objc.ivar("method_name")
+
+    @objc.python_method
+    def initWithController_key_method_(self, ctrl, key, method):
+        self = self.init()
+        if self:
+            self.controller = ctrl
+            self.setting_key = key
+            self.method_name = method
+        return self
+
+    def toggled_(self, sender):
+        on = bool(sender.state())
+        self.controller.presets.settings[self.setting_key] = on
+        self.controller.presets._write()
+        getattr(self.controller, self.method_name)(on)
+
+
 class HotkeyDelegate(NSObject):
     """Handles hotkey popup selection changes."""
 
@@ -143,9 +165,10 @@ def show_settings_window(controller):
         _settings_window.makeKeyAndOrderFront_(None)
         return
 
-    win_w, win_h = 400, 720
+    win_w, win_h = 400, 880
     style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 
+    from AppKit import NSWindow, NSFloatingWindowLevel
     win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(300, 300, win_w, win_h), style, NSBackingStoreBuffered, False
     )
@@ -156,6 +179,7 @@ def show_settings_window(controller):
     if dark:
         win.setAppearance_(dark)
     win.setReleasedWhenClosed_(False)
+    win.setLevel_(NSFloatingWindowLevel)
 
     cv = win.contentView()
     delegates = []
@@ -175,8 +199,65 @@ def show_settings_window(controller):
     _make_slider_row(cv, y, "Grid IN/OUT Header Font Size", "grid_header_font_size",
                      DEFAULT_GRID_HEADER_SIZE, 7, 16, controller, delegates)
 
-    # -- Hotkey Presets section --
+    # -- Window & Hotkey Behavior section --
     y -= 50
+    cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Window & Hotkey Behavior", size=14, bold=True))
+
+    y -= 35
+    from AppKit import NSButton
+    keep_on_top_check = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 360, 20))
+    keep_on_top_check.setButtonType_(3)  # NSSwitchButton
+    keep_on_top_check.setTitle_("Keep on Top")
+    keep_on_top_check.setFont_(NSFont.systemFontOfSize_(12))
+    keep_on_top_check.setState_(
+        1 if controller.presets.settings.get("keep_on_top", False) else 0
+    )
+    kot_delegate = ToggleDelegate.alloc().initWithController_key_method_(
+        controller, "keep_on_top", "_apply_keep_on_top"
+    )
+    keep_on_top_check.setTarget_(kot_delegate)
+    keep_on_top_check.setAction_(objc.selector(kot_delegate.toggled_, signature=b"v@:@"))
+    delegates.append(kot_delegate)
+    cv.addSubview_(keep_on_top_check)
+
+    y -= 16
+    cv.addSubview_(_make_label(
+        NSMakeRect(36, y, 340, 14),
+        "Float above other apps like DaVinci Resolve",
+        size=10, color=TEXT_DIM,
+    ))
+
+    y -= 30
+    global_hk_check = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 360, 20))
+    global_hk_check.setButtonType_(3)  # NSSwitchButton
+    global_hk_check.setTitle_("Global Hotkeys")
+    global_hk_check.setFont_(NSFont.systemFontOfSize_(12))
+    global_hk_check.setState_(
+        1 if controller.presets.settings.get("global_hotkeys", False) else 0
+    )
+    ghk_delegate = ToggleDelegate.alloc().initWithController_key_method_(
+        controller, "global_hotkeys", "_apply_global_hotkeys"
+    )
+    global_hk_check.setTarget_(ghk_delegate)
+    global_hk_check.setAction_(objc.selector(ghk_delegate.toggled_, signature=b"v@:@"))
+    delegates.append(ghk_delegate)
+    cv.addSubview_(global_hk_check)
+
+    y -= 16
+    cv.addSubview_(_make_label(
+        NSMakeRect(36, y, 340, 14),
+        "Keys 1-0 trigger presets even when app is not focused",
+        size=10, color=TEXT_DIM,
+    ))
+    y -= 14
+    cv.addSubview_(_make_label(
+        NSMakeRect(36, y, 340, 14),
+        "System Settings > Privacy & Security > Accessibility",
+        size=10, color=TEXT_DIM,
+    ))
+
+    # -- Hotkey Presets section --
+    y -= 40
     cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Hotkey Presets", size=14, bold=True))
 
     y -= 18

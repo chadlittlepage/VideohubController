@@ -12,7 +12,69 @@ import socket
 import threading
 
 VIDEOHUB_PORT = 9990
+VIDEOHUB_BONJOUR_TYPE = "_videohub._tcp."
 NUM_IO = 10
+
+
+def discover_videohubs(timeout: float = 3.0, callback=None) -> list[dict]:
+    """Discover Videohubs on the local network via Bonjour/mDNS.
+
+    Returns a list of dicts: [{"name": "...", "host": "...", "port": 9990}, ...]
+
+    On macOS 15+, this Bonjour browse also triggers the Local Network
+    permission prompt if it hasn't been granted yet, which ensures
+    subsequent raw TCP connections work without the toggle issue.
+
+    Args:
+        timeout: How long to browse (seconds).
+        callback: Optional callable(name, host, port) called per discovery.
+    """
+    from Foundation import NSObject, NSRunLoop, NSDate, NSDefaultRunLoopMode
+
+    results = []
+
+    class BrowseDelegate(NSObject):
+        def netServiceBrowser_didFindService_moreComing_(self, browser, service, more):
+            service.setDelegate_(self)
+            service.resolveWithTimeout_(5.0)
+
+        def netServiceDidResolveAddress_(self, service):
+            name = str(service.name())
+            host = str(service.hostName()).rstrip(".")
+            port = service.port()
+            entry = {"name": name, "host": host, "port": port}
+            results.append(entry)
+            print(f"[discovery] Found: {name} at {host}:{port}")
+            if callback:
+                try:
+                    callback(name, host, port)
+                except Exception:
+                    pass
+
+        def netServiceBrowser_didNotSearch_(self, browser, error):
+            print(f"[discovery] Browse error: {error}")
+
+    try:
+        from AppKit import NSNetServiceBrowser
+        delegate = BrowseDelegate.alloc().init()
+        browser = NSNetServiceBrowser.alloc().init()
+        browser.setDelegate_(delegate)
+        browser.searchForServicesOfType_inDomain_(VIDEOHUB_BONJOUR_TYPE, "local.")
+
+        # Pump run loop for the timeout duration
+        deadline = NSDate.dateWithTimeIntervalSinceNow_(timeout)
+        while NSDate.date().compare_(deadline) < 0:
+            NSRunLoop.currentRunLoop().runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.1),
+            )
+
+        browser.stop()
+        print(f"[discovery] Browse complete: {len(results)} device(s) found")
+    except Exception as e:
+        print(f"[discovery] Bonjour browse failed: {e}")
+
+    return results
 
 
 class VideohubConnection:
@@ -44,6 +106,12 @@ class VideohubConnection:
         Returns True on success, error string on failure.
         """
         import time as _time
+        # Trigger a quick Bonjour browse to ensure Local Network permission
+        # is granted before attempting raw TCP (macOS 15+ requirement)
+        try:
+            discover_videohubs(timeout=0.5)
+        except Exception:
+            pass
         last_error = ""
         print(f"[connection] Connecting to {ip}:{VIDEOHUB_PORT} (up to {retries} attempts)...")
         for attempt in range(retries):

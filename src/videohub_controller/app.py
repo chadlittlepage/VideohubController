@@ -472,6 +472,13 @@ class AppController(NSObject):
         self.connect_btn.setAction_(objc.selector(self.toggleConnection_, signature=b"v@:@"))
         self.conn_bg.addSubview_(self.connect_btn)
 
+        self.discover_btn = NSButton.alloc().initWithFrame_(NSMakeRect(365, 8, 80, 28))
+        self.discover_btn.setTitle_("Discover")
+        self.discover_btn.setBezelStyle_(NSBezelStyleRounded)
+        self.discover_btn.setTarget_(self)
+        self.discover_btn.setAction_(objc.selector(self.discoverDevices_, signature=b"v@:@"))
+        self.conn_bg.addSubview_(self.discover_btn)
+
         # Preset controls (right-justified, even spacing)
         r = content_w
         gap = 6
@@ -829,6 +836,36 @@ class AppController(NSObject):
 
     # -- Actions --
 
+    def discoverDevices_(self, sender):
+        """Discover Videohubs on the local network via Bonjour."""
+        self.discover_btn.setEnabled_(False)
+        self.set_status("Discovering Videohubs on the network...")
+        threading.Thread(target=self._do_discover, daemon=True).start()
+
+    @objc.python_method
+    def _do_discover(self):
+        from videohub_controller.connection import discover_videohubs
+        devices = discover_videohubs(timeout=3.0)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            objc.selector(self._discoveryDone_, signature=b"v@:@"),
+            devices if devices else None,
+            False,
+        )
+
+    def _discoveryDone_(self, devices):
+        self.discover_btn.setEnabled_(True)
+        if not devices or len(devices) == 0:
+            self.set_status("No Videohubs found. Enter IP manually.")
+            return
+        # Use the first discovered device
+        dev = devices[0]
+        ip = dev["host"]
+        name = dev["name"]
+        self.ip_field.setStringValue_(ip)
+        self.set_status(f"Found: {name} at {ip} — connecting...")
+        self.connect_btn.setEnabled_(False)
+        threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+
     def toggleConnection_(self, sender):
         if self.hub.connected:
             self.hub.disconnect()
@@ -1030,6 +1067,61 @@ class AppController(NSObject):
 
     def showSettings_(self, sender):
         show_settings_window(self)
+
+    def exportSettings_(self, sender):
+        """Export all settings (presets, IP, hotkeys, session) to a JSON file."""
+        from AppKit import NSSavePanel
+        self._save_session()
+        panel = NSSavePanel.savePanel()
+        panel.setNameFieldStringValue_("VideohubController_settings.json")
+        try:
+            panel.setAllowedFileTypes_(["json"])
+        except Exception:
+            pass
+        if panel.runModal() == 1:
+            try:
+                from videohub_controller.presets import CONFIG_PATH
+                import shutil
+                shutil.copy2(str(CONFIG_PATH), str(panel.URL().path()))
+                self.set_status(f"Settings exported to {panel.URL().path()}")
+            except Exception as e:
+                self.set_status(f"Export failed: {e}")
+
+    def importSettings_(self, sender):
+        """Import all settings from a JSON file."""
+        from AppKit import NSOpenPanel
+        import json
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseFiles_(True)
+        panel.setCanChooseDirectories_(False)
+        panel.setAllowsMultipleSelection_(False)
+        panel.setMessage_("Choose a Videohub Controller settings file to import")
+        try:
+            panel.setAllowedFileTypes_(["json"])
+        except Exception:
+            pass
+        if panel.runModal() == 1:
+            urls = panel.URLs()
+            if urls and len(urls) > 0:
+                source = str(urls[0].path())
+                try:
+                    data = json.loads(open(source).read())
+                    # Validate it looks like our config
+                    if "presets" not in data and "settings" not in data:
+                        self.set_status("Import failed: not a valid settings file")
+                        return
+                    from videohub_controller.presets import CONFIG_PATH, _SHARED_DIR
+                    _SHARED_DIR.mkdir(parents=True, exist_ok=True)
+                    CONFIG_PATH.write_text(json.dumps(data, indent=2))
+                    # Reload everything
+                    self.presets._load()
+                    self._restore_session()
+                    self._refresh_preset_popup()
+                    self._refresh_hotkey_indicators()
+                    invalidate_settings_window()
+                    self.set_status(f"Settings imported from {source}")
+                except Exception as e:
+                    self.set_status(f"Import failed: {e}")
 
     def exportConsole_(self, sender):
         """Export console log via NSSavePanel."""
@@ -1507,8 +1599,78 @@ class AppController(NSObject):
         else:
             self.set_status(f"Preset loaded: {name} (offline)")
 
+    @objc.python_method
+    def _apply_global_hotkeys(self, on):
+        """Toggle global hotkey monitoring (captures 1-0 even when app is not focused)."""
+        # Remove existing global monitor if any
+        if hasattr(self, '_global_key_monitor') and self._global_key_monitor:
+            NSEvent.removeMonitor_(self._global_key_monitor)
+            self._global_key_monitor = None
+            print("[hotkeys] Global hotkey monitor removed")
+
+        if on:
+            # Check if we have Accessibility permission; open Settings if not
+            import subprocess
+            trusted = False
+            try:
+                import ctypes
+                cf = ctypes.cdll.LoadLibrary(
+                    "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+                )
+                cf.AXIsProcessTrusted.restype = ctypes.c_bool
+                trusted = cf.AXIsProcessTrusted()
+            except Exception:
+                trusted = True  # assume trusted if we can't check
+
+            if not trusted:
+                subprocess.Popen([
+                    "open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                ])
+                print("[hotkeys] Opened Accessibility settings — add this app and toggle ON")
+                self.set_status("Grant Accessibility permission, then re-enable Global Hotkeys")
+
+            def global_handler(event):
+                try:
+                    key = event.charactersIgnoringModifiers()
+                    flags = event.modifierFlags()
+                    # Ignore if Cmd/Ctrl/Option held
+                    if flags & (1 << 20 | 1 << 18 | 1 << 19):
+                        return
+                    if key in "1234567890":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            objc.selector(self._globalHotkeyFired_, signature=b"v@:@"),
+                            key,
+                            False,
+                        )
+                except Exception:
+                    pass
+
+            self._global_key_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                NSKeyDownMask, global_handler
+            )
+            print("[hotkeys] Global hotkey monitor installed")
+
+    def _globalHotkeyFired_(self, key):
+        """Called on main thread when a global hotkey fires."""
+        self._recall_preset_by_key(str(key))
+
+    @objc.python_method
+    def _apply_keep_on_top(self, on):
+        """Toggle the main window floating above all other apps."""
+        from AppKit import NSFloatingWindowLevel, NSNormalWindowLevel
+        if on:
+            self.window.setLevel_(NSFloatingWindowLevel)
+        else:
+            self.window.setLevel_(NSNormalWindowLevel)
+
     def show(self):
         self._restore_session()
+        # Apply persisted window/hotkey settings
+        if self.presets.settings.get("keep_on_top", False):
+            self._apply_keep_on_top(True)
+        if self.presets.settings.get("global_hotkeys", False):
+            self._apply_global_hotkeys(True)
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
         self.window.orderFrontRegardless()
@@ -1543,8 +1705,10 @@ class AppDelegate(NSObject):
     def applicationWillTerminate_(self, notification):
         if self.controller:
             self.controller._save_session()
-            if hasattr(self.controller, '_key_monitor'):
+            if hasattr(self.controller, '_key_monitor') and self.controller._key_monitor:
                 NSEvent.removeMonitor_(self.controller._key_monitor)
+            if hasattr(self.controller, '_global_key_monitor') and self.controller._global_key_monitor:
+                NSEvent.removeMonitor_(self.controller._global_key_monitor)
             if self.controller.hub.connected:
                 self.controller.hub.disconnect()
 
@@ -1564,6 +1728,14 @@ class AppDelegate(NSObject):
     def showSettings_(self, sender):
         if self.controller:
             self.controller.showSettings_(sender)
+
+    def exportSettings_(self, sender):
+        if self.controller:
+            self.controller.exportSettings_(sender)
+
+    def importSettings_(self, sender):
+        if self.controller:
+            self.controller.importSettings_(sender)
 
 
 def main():
@@ -1610,6 +1782,22 @@ def main():
     )
     app_menu.addItem_(quit_item)
     app_menu_item.setSubmenu_(app_menu)
+
+    # File menu (Export / Import settings)
+    file_menu_item = NSMenuItem.alloc().init()
+    menubar.addItem_(file_menu_item)
+    file_menu = NSMenu.alloc().initWithTitle_("File")
+    export_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Export Settings\u2026", "exportSettings:", "e"
+    )
+    export_item.setKeyEquivalentModifierMask_(1 << 17 | 1 << 20)  # Shift+Cmd
+    file_menu.addItem_(export_item)
+    import_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Import Settings\u2026", "importSettings:", "i"
+    )
+    import_item.setKeyEquivalentModifierMask_(1 << 17 | 1 << 20)  # Shift+Cmd
+    file_menu.addItem_(import_item)
+    file_menu_item.setSubmenu_(file_menu)
 
     # Edit menu (required for Cmd+C/V/X/A in text fields)
     edit_menu_item = NSMenuItem.alloc().init()
