@@ -142,6 +142,9 @@ def show_about_window() -> None:
     close_btn.setAutoresizingMask_(1 | 4 | 32)
     content.addSubview_(close_btn)
 
+    # Ensure About window appears above the main window (even if Keep on Top is active)
+    from AppKit import NSFloatingWindowLevel
+    window.setLevel_(NSFloatingWindowLevel + 1)
     window.makeKeyAndOrderFront_(None)
     if hasattr(NSApp, "activate"):
         NSApp.activate()

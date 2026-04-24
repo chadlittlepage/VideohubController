@@ -49,7 +49,9 @@ from Foundation import NSObject
 from Quartz import CGColorCreateGenericRGB
 
 from videohub_controller import __version__
-from videohub_controller.connection import VideohubConnection, NUM_IO
+from videohub_controller.connection import (
+    VideohubConnection, NUM_IO,
+)
 from videohub_controller.about_window import show_about_window
 from videohub_controller.console_log import setup_logging, get_log_path
 from videohub_controller.manual_window import show_manual_window
@@ -180,6 +182,13 @@ class PassthroughView(NSView):
 
     def hitTest_(self, point):
         return None
+
+
+class FlippedView(NSView):
+    """NSView with y=0 at the top. Used as NSScrollView document view."""
+
+    def isFlipped(self):
+        return True
 
 
 class MatrixOverlayView(NSView):
@@ -317,10 +326,16 @@ class AppController(NSObject):
             return None
 
         self.presets = PresetManager()
+        # Apply saved device model for initial I/O size
+        from videohub_controller.connection import VIDEOHUB_MODELS
+        saved_model = self.presets.settings.get("device_model", "Auto-Detect")
+        init_in, init_out = VIDEOHUB_MODELS.get(saved_model, (NUM_IO, NUM_IO))
         self.hub = VideohubConnection(
             on_state_update=self._on_state_update,
             on_connect=self._on_connect,
             on_disconnect=self._on_disconnect,
+            num_inputs=init_in,
+            num_outputs=init_out,
         )
         self.matrix_buttons: dict[tuple[int, int], MatrixButton] = {}
         self.col_headers: list[NSTextField] = []
@@ -331,6 +346,8 @@ class AppController(NSObject):
         self._active_hotkey: str | None = None
         self._lcd_idle: bool = True
         self._last_window_size: tuple = (0, 0)
+        self._num_inputs: int = self.hub.num_inputs
+        self._num_outputs: int = self.hub.num_outputs
 
         self._build_window()
         self._install_key_monitor()
@@ -349,8 +366,10 @@ class AppController(NSObject):
             | NSWindowStyleMaskMiniaturizable
             | NSWindowStyleMaskResizable
         )
-        win_w = LABEL_COL_W + ROW_LABEL_W + (NUM_IO * (MATRIX_CELL + 2)) + 60
-        win_h = HEADER_H + CONN_BAR_H + 40 + (NUM_IO * (MATRIX_CELL + 2)) + 80 + BOTTOM_BAR_H
+        n_in = self.hub.num_inputs
+        n_out = self.hub.num_outputs
+        win_w = min(1400, LABEL_COL_W + ROW_LABEL_W + (n_in * (MATRIX_CELL + 2)) + 60)
+        win_h = min(900, HEADER_H + CONN_BAR_H + 40 + (n_out * (MATRIX_CELL + 2)) + 80 + BOTTOM_BAR_H)
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 100, win_w, win_h),
@@ -359,9 +378,8 @@ class AppController(NSObject):
             False,
         )
         self.window.setTitle_(f"Videohub Controller v{__version__}")
-        # Min height: title + conn bar + all labels content + bottom bar + padding
-        labels_content_h = 30 + 6 + (NUM_IO * 28) + 20 + 24 + 6 + (NUM_IO * 28) + 10
-        min_h = HEADER_H + CONN_BAR_H + labels_content_h + BOTTOM_BAR_H + 50
+        # Min height: capped so large grids don't force a huge window
+        min_h = HEADER_H + CONN_BAR_H + 300 + BOTTOM_BAR_H
         self.window.setMinSize_((900, min_h))
         self.window.setBackgroundColor_(BG_DARK)
         # Force dark appearance so the app looks correct even in light mode
@@ -526,94 +544,30 @@ class AppController(NSObject):
         preset_lbl.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(preset_lbl)
 
-        # -- Main area --
+        # -- Main area (labels + matrix) -- built dynamically
         y -= 4
+        self._main_area_top = y
+        self._cv_autoresize_W = W_SIZABLE
+        self._cv_autoresize_H = H_SIZABLE
+        self._cv_autoresize_MIN_Y = MIN_Y
 
-        # Left panel: labels (pin to left, stretch height; content pinned to top)
+        # Create panel containers (rebuilt by _rebuild_io)
         labels_h = y - BOTTOM_BAR_H
+        content_w_val = content_w
         self.labels_bg = _colored_view(NSMakeRect(8, BOTTOM_BAR_H, LABEL_COL_W, labels_h), *BG_PANEL_RGB, corner_radius=8)
-        self.labels_bg.setAutoresizingMask_(H_SIZABLE)  # stretch height, pin left
+        self.labels_bg.setAutoresizingMask_(H_SIZABLE)
         cv.addSubview_(self.labels_bg)
 
-        # Inner container pinned to top of labels panel
-        entry_h = 24
-        spacing = 28
-        inner_h = 30 + 6 + (NUM_IO * spacing) + 20 + 24 + 6 + (NUM_IO * spacing) + 10
-        self.labels_inner = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, labels_h - inner_h, LABEL_COL_W, inner_h)
-        )
-        self.labels_inner.setAutoresizingMask_(MIN_Y)  # pin to top
-        self.labels_bg.addSubview_(self.labels_inner)
-        labels_inner = self.labels_inner
-
-        ly = inner_h - 30
-
-        labels_inner.addSubview_(
-            _label(NSMakeRect(10, ly, 200, 18), "INPUT LABELS", size=11, bold=True, color=TEXT_DIM)
-        )
-        ly -= 6
-
-        for i in range(NUM_IO):
-            ly -= spacing
-            labels_inner.addSubview_(
-                _label(NSMakeRect(10, ly, 24, entry_h), f"{i + 1}.", size=11, color=TEXT_DIM)
-            )
-            wrapper, tf = _editable(
-                NSMakeRect(34, ly, LABEL_COL_W - 48, entry_h),
-                text=self.hub.input_labels[i],
-                placeholder=f"Input {i + 1}",
-                size=11,
-            )
-            delegate = InputLabelDelegate.alloc().initWithIndex_controller_(i, self)
-            tf.setDelegate_(delegate)
-            self._label_delegates.append(delegate)
-            labels_inner.addSubview_(wrapper)
-            self.input_entries.append(tf)
-
-        ly -= 20
-
-        sep = NSBox.alloc().initWithFrame_(NSMakeRect(12, ly, LABEL_COL_W - 24, 1))
-        sep.setBoxType_(NSBoxSeparator)
-        labels_inner.addSubview_(sep)
-
-        ly -= 24
-        labels_inner.addSubview_(
-            _label(NSMakeRect(10, ly, 200, 18), "OUTPUT LABELS", size=11, bold=True, color=TEXT_DIM)
-        )
-        ly -= 6
-
-        for i in range(NUM_IO):
-            ly -= spacing
-            labels_inner.addSubview_(
-                _label(NSMakeRect(10, ly, 24, entry_h), f"{i + 1}.", size=11, color=TEXT_DIM)
-            )
-            wrapper, tf = _editable(
-                NSMakeRect(34, ly, LABEL_COL_W - 48, entry_h),
-                text=self.hub.output_labels[i],
-                placeholder=f"Output {i + 1}",
-                size=11,
-            )
-            delegate = OutputLabelDelegate.alloc().initWithIndex_controller_(i, self)
-            tf.setDelegate_(delegate)
-            self._label_delegates.append(delegate)
-            labels_inner.addSubview_(wrapper)
-            self.output_entries.append(tf)
-
-        # Set up tab order: IP -> Input 1-10 -> Output 1-10 (no loop back)
-        all_fields = [self.ip_field] + self.input_entries + self.output_entries
-        for i in range(len(all_fields) - 1):
-            all_fields[i].setNextKeyView_(all_fields[i + 1])
-
-        # Right panel: crosspoint matrix (stretch both width and height)
         matrix_x = LABEL_COL_W + 12
         self.matrix_bg = _colored_view(
-            NSMakeRect(matrix_x, BOTTOM_BAR_H, content_w - matrix_x - 8, labels_h),
+            NSMakeRect(matrix_x, BOTTOM_BAR_H, content_w_val - matrix_x - 8, labels_h),
             *BG_PANEL_RGB, corner_radius=8,
         )
         self.matrix_bg.setAutoresizingMask_(W_SIZABLE | H_SIZABLE)
-        self.matrix_bg.setAutoresizesSubviews_(False)  # we handle layout manually
+        self.matrix_bg.setAutoresizesSubviews_(False)
         cv.addSubview_(self.matrix_bg)
 
+        # Static matrix elements (title, subtitle, hotkeys)
         self.matrix_title = _label(
             NSMakeRect(10, 0, 200, 20),
             "CROSSPOINT MATRIX", size=11, bold=True, color=TEXT_DIM,
@@ -622,12 +576,11 @@ class AppController(NSObject):
 
         self.matrix_subtitle = _label(
             NSMakeRect(10, 0, 350, 16),
-            "Click a cell to route that input to that output",
+            "",
             size=10, color=TEXT_DIM,
         )
         self.matrix_bg.addSubview_(self.matrix_subtitle)
 
-        # Hotkey indicator buttons (1-9, 0) right-justified in title area
         self.hotkey_labels = []
         for i, key in enumerate("1234567890"):
             btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 22, 20))
@@ -642,43 +595,7 @@ class AppController(NSObject):
             self.matrix_bg.addSubview_(btn)
             self.hotkey_labels.append(btn)
 
-        # Column headers (inputs)
-        for i in range(NUM_IO):
-            lbl = _label(
-                NSMakeRect(0, 0, MATRIX_CELL, 28),
-                f"IN {i + 1}", size=9, bold=True, color=TEXT_DIM,
-                align=NSCenterTextAlignment,
-            )
-            lbl.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
-            self.matrix_bg.addSubview_(lbl)
-            self.col_headers.append(lbl)
-
-        # Matrix rows
-        for out_idx in range(NUM_IO):
-            row_lbl = _label(
-                NSMakeRect(0, 0, ROW_LABEL_W - 8, MATRIX_CELL),
-                f"OUT {out_idx + 1}", size=9, bold=True, color=TEXT_DIM,
-                align=NSRightTextAlignment,
-            )
-            row_lbl.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
-            self.matrix_bg.addSubview_(row_lbl)
-            self.row_headers.append(row_lbl)
-
-            for in_idx in range(NUM_IO):
-                btn = MatrixButton.alloc().initWithFrame_(NSMakeRect(0, 0, MATRIX_CELL, MATRIX_CELL))
-                btn.output_idx = out_idx
-                btn.input_idx = in_idx
-                btn.setTitle_("")
-                btn.setBordered_(False)
-                btn.setWantsLayer_(True)
-                btn.layer().setCornerRadius_(4)
-                btn.layer().setBackgroundColor_(_cg(*INACTIVE_RGB))
-                btn.setTarget_(self)
-                btn.setAction_(objc.selector(self.matrixClicked_, signature=b"v@:@"))
-                self.matrix_bg.addSubview_(btn)
-                self.matrix_buttons[(out_idx, in_idx)] = btn
-
-        # Crosshair lines (hidden until hover, pass through clicks)
+        # Crosshairs
         self.crosshair_h = PassthroughView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 2))
         self.crosshair_h.setWantsLayer_(True)
         self.crosshair_h.layer().setBackgroundColor_(CROSSHAIR_COLOR)
@@ -691,7 +608,7 @@ class AppController(NSObject):
         self.crosshair_v.setHidden_(True)
         self.matrix_bg.addSubview_(self.crosshair_v)
 
-        # Transparent overlay for mouse tracking (must be on top)
+        # Overlay
         mw_init = int(self.matrix_bg.frame().size.width)
         mh_init = int(self.matrix_bg.frame().size.height)
         self.matrix_overlay = MatrixOverlayView.alloc().initWithFrame_(
@@ -701,11 +618,13 @@ class AppController(NSObject):
         self.matrix_overlay.setController_(self)
         self.matrix_bg.addSubview_(self.matrix_overlay)
 
-        # Store grid geometry for hover calculations
         self._grid_x = 0
         self._grid_start_y = 0
         self._grid_cell = MATRIX_CELL
         self._grid_gap = 2
+
+        # Build labels and matrix for current I/O count
+        self._rebuild_io(self.hub.num_inputs, self.hub.num_outputs)
 
         # -- Bottom status bar (pin to bottom, stretch width) --
         bottom_bg = _colored_view(NSMakeRect(0, 0, content_w, BOTTOM_BAR_H), *HEADER_BG_RGB)
@@ -733,6 +652,298 @@ class AppController(NSObject):
             "NSWindowDidResizeNotification",
             self.window,
         )
+
+    @objc.python_method
+    def _rebuild_io(self, num_in, num_out):
+        """Tear down and rebuild label entries and matrix buttons for a new I/O count."""
+        self._num_inputs = num_in
+        self._num_outputs = num_out
+        large = max(num_in, num_out) > 10  # two-column layout for large models
+
+        # --- Clear existing ---
+        if hasattr(self, 'labels_inner') and self.labels_inner:
+            self.labels_inner.removeFromSuperview()
+        self.input_entries = []
+        self.output_entries = []
+        self._label_delegates = []
+        for btn in self.matrix_buttons.values():
+            btn.removeFromSuperview()
+        self.matrix_buttons = {}
+        for lbl in self.col_headers:
+            lbl.removeFromSuperview()
+        self.col_headers = []
+        for lbl in self.row_headers:
+            lbl.removeFromSuperview()
+        self.row_headers = []
+
+        # --- Determine label panel width ---
+        if large:
+            col_w = LABEL_COL_W // 2 - 4
+            label_panel_w = LABEL_COL_W
+        else:
+            col_w = LABEL_COL_W - 14
+            label_panel_w = LABEL_COL_W
+
+        # --- Rebuild label entries (pinned to top of labels panel) ---
+        labels_h = int(self.labels_bg.frame().size.height)
+        entry_h = 24
+        spacing = 28
+        max_rows = max(num_in, num_out)
+        self._labels_scroll = None
+
+        # Fixed header + content area
+        header_h = 22
+
+        # Remove old header/content if rebuilding
+        if hasattr(self, '_labels_header_view') and self._labels_header_view:
+            self._labels_header_view.removeFromSuperview()
+        if hasattr(self, '_labels_scroll_view') and self._labels_scroll_view:
+            self._labels_scroll_view.removeFromSuperview()
+            self._labels_scroll_view = None
+
+        # Fixed header pinned to top
+        self._labels_header_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, labels_h - header_h, label_panel_w, header_h)
+        )
+        self._labels_header_view.setAutoresizingMask_(8)  # pin to top
+        if large:
+            left_x = 4
+            right_x = LABEL_COL_W // 2 + 2
+            self._labels_header_view.addSubview_(
+                _label(NSMakeRect(left_x, 2, col_w, 18), "INPUT LABELS", size=10, bold=True, color=TEXT_DIM)
+            )
+            self._labels_header_view.addSubview_(
+                _label(NSMakeRect(right_x, 2, col_w, 18), "OUTPUT LABELS", size=10, bold=True, color=TEXT_DIM)
+            )
+        else:
+            self._labels_header_view.addSubview_(
+                _label(NSMakeRect(10, 2, 200, 18), "INPUT / OUTPUT LABELS", size=11, bold=True, color=TEXT_DIM)
+            )
+        self.labels_bg.addSubview_(self._labels_header_view)
+
+        # Content height for entries
+        if large:
+            entries_h = (max_rows * spacing) + 10
+        else:
+            entries_h = (num_in * spacing) + 20 + (num_out * spacing) + 10
+
+        content_area_h = labels_h - header_h
+
+        # Always use scroll view — shows scrollbar only when needed
+        from AppKit import NSScrollView
+        self._labels_scroll_view = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, label_panel_w, content_area_h)
+        )
+        self._labels_scroll_view.setHasVerticalScroller_(True)
+        self._labels_scroll_view.setAutohidesScrollers_(True)
+        self._labels_scroll_view.setHasHorizontalScroller_(False)
+        self._labels_scroll_view.setAutoresizingMask_(2 | 16)  # W + H
+        self._labels_scroll_view.setDrawsBackground_(False)
+        self._labels_scroll_view.setBorderType_(0)
+
+        # Flipped document view — y=0 at top, content flows downward
+        self.labels_inner = FlippedView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, label_panel_w, entries_h)
+        )
+        self._labels_scroll_view.setDocumentView_(self.labels_inner)
+        self.labels_bg.addSubview_(self._labels_scroll_view)
+
+        if large:
+            # Two-column layout: IN on left, OUT on right (top-down in flipped view)
+            left_x = 4
+            right_x = LABEL_COL_W // 2 + 2
+            ly = 4
+
+            for i in range(max_rows):
+                # Input column
+                if i < num_in:
+                    self.labels_inner.addSubview_(
+                        _label(NSMakeRect(left_x, ly, 20, entry_h), f"{i+1}.", size=10, color=TEXT_DIM)
+                    )
+                    text = self.hub.input_labels[i] if i < len(self.hub.input_labels) else f"Input {i+1}"
+                    wrapper, tf = _editable(
+                        NSMakeRect(left_x + 20, ly, col_w - 24, entry_h),
+                        text=text, placeholder=f"In {i+1}", size=10,
+                    )
+                    delegate = InputLabelDelegate.alloc().initWithIndex_controller_(i, self)
+                    tf.setDelegate_(delegate)
+                    self._label_delegates.append(delegate)
+                    self.labels_inner.addSubview_(wrapper)
+                    self.input_entries.append(tf)
+                # Output column
+                if i < num_out:
+                    self.labels_inner.addSubview_(
+                        _label(NSMakeRect(right_x, ly, 20, entry_h), f"{i+1}.", size=10, color=TEXT_DIM)
+                    )
+                    text = self.hub.output_labels[i] if i < len(self.hub.output_labels) else f"Output {i+1}"
+                    wrapper, tf = _editable(
+                        NSMakeRect(right_x + 20, ly, col_w - 24, entry_h),
+                        text=text, placeholder=f"Out {i+1}", size=10,
+                    )
+                    delegate = OutputLabelDelegate.alloc().initWithIndex_controller_(i, self)
+                    tf.setDelegate_(delegate)
+                    self._label_delegates.append(delegate)
+                    self.labels_inner.addSubview_(wrapper)
+                    self.output_entries.append(tf)
+                ly += spacing
+        else:
+            # Single-column layout (top-down in flipped view)
+            ly = 4
+            for i in range(num_in):
+                self.labels_inner.addSubview_(
+                    _label(NSMakeRect(10, ly, 24, entry_h), f"{i+1}.", size=11, color=TEXT_DIM)
+                )
+                text = self.hub.input_labels[i] if i < len(self.hub.input_labels) else f"Input {i+1}"
+                wrapper, tf = _editable(
+                    NSMakeRect(34, ly, LABEL_COL_W - 48, entry_h),
+                    text=text, placeholder=f"Input {i+1}", size=11,
+                )
+                delegate = InputLabelDelegate.alloc().initWithIndex_controller_(i, self)
+                tf.setDelegate_(delegate)
+                self._label_delegates.append(delegate)
+                self.labels_inner.addSubview_(wrapper)
+                self.input_entries.append(tf)
+                ly += spacing
+
+            ly += 10
+            sep = NSBox.alloc().initWithFrame_(NSMakeRect(12, ly, LABEL_COL_W - 24, 1))
+            sep.setBoxType_(NSBoxSeparator)
+            self.labels_inner.addSubview_(sep)
+
+            ly += 10
+            for i in range(num_out):
+                self.labels_inner.addSubview_(
+                    _label(NSMakeRect(10, ly, 24, entry_h), f"{i+1}.", size=11, color=TEXT_DIM)
+                )
+                text = self.hub.output_labels[i] if i < len(self.hub.output_labels) else f"Output {i+1}"
+                wrapper, tf = _editable(
+                    NSMakeRect(34, ly, LABEL_COL_W - 48, entry_h),
+                    text=text, placeholder=f"Output {i+1}", size=11,
+                )
+                delegate = OutputLabelDelegate.alloc().initWithIndex_controller_(i, self)
+                tf.setDelegate_(delegate)
+                self._label_delegates.append(delegate)
+                self.labels_inner.addSubview_(wrapper)
+                self.output_entries.append(tf)
+                ly += spacing
+
+        # Tab order
+        all_fields = [self.ip_field] + self.input_entries + self.output_entries
+        for i in range(len(all_fields) - 1):
+            all_fields[i].setNextKeyView_(all_fields[i + 1])
+
+
+
+
+        # --- Grid scroll view (for large grids that overflow) ---
+        if hasattr(self, '_grid_scroll') and self._grid_scroll:
+            self._grid_scroll.removeFromSuperview()
+            self._grid_scroll = None
+        if hasattr(self, '_grid_container') and self._grid_container:
+            self._grid_container.removeFromSuperview()
+            self._grid_container = None
+
+        # For >12x12, use a scroll view inside matrix_bg below the title area
+        from AppKit import NSScrollView
+        mw = int(self.matrix_bg.frame().size.width)
+        mh = int(self.matrix_bg.frame().size.height)
+        title_area = 30  # space for CROSSPOINT MATRIX title + hotkeys
+        if num_in > 12 or num_out > 12:
+            self._grid_scroll = NSScrollView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, mw, mh - title_area)
+            )
+            self._grid_scroll.setHasVerticalScroller_(True)
+            self._grid_scroll.setHasHorizontalScroller_(True)
+            self._grid_scroll.setAutohidesScrollers_(True)
+            self._grid_scroll.setAutoresizingMask_(2 | 16)  # W + H
+            self._grid_scroll.setDrawsBackground_(False)
+            self._grid_scroll.setBorderType_(0)
+            # Use a large container; _layout_matrix will size it
+            self._grid_container = NSView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, mw, mh)
+            )
+            self._grid_scroll.setDocumentView_(self._grid_container)
+            self.matrix_bg.addSubview_(self._grid_scroll)
+            grid_parent = self._grid_container
+        else:
+            self._grid_scroll = None
+            self._grid_container = None
+            grid_parent = self.matrix_bg
+
+        # --- Rebuild matrix headers and buttons ---
+        # Remove old IN/OUT marker labels
+        if hasattr(self, '_in_marker') and self._in_marker:
+            self._in_marker.removeFromSuperview()
+        if hasattr(self, '_out_marker') and self._out_marker:
+            self._out_marker.removeFromSuperview()
+
+        # IN/OUT marker labels — in grid_parent so they scroll with the grid
+        self._in_marker = _label(
+            NSMakeRect(0, 0, 30, 16), "IN \u25B6", size=9, bold=True, color=TEXT_WHITE,
+        )
+        grid_parent.addSubview_(self._in_marker)
+        self._out_marker = _label(
+            NSMakeRect(0, 0, 30, 16), "OUT \u25BC", size=9, bold=True, color=TEXT_WHITE,
+        )
+        grid_parent.addSubview_(self._out_marker)
+
+        # Column headers — numbers for large, "IN N" for small
+        for i in range(num_in):
+            text = str(i + 1) if large else f"IN {i + 1}"
+            align = NSCenterTextAlignment
+            lbl = _label(
+                NSMakeRect(0, 0, MATRIX_CELL, 28),
+                text, size=9, bold=True, color=TEXT_WHITE if large else TEXT_DIM,
+                align=align,
+            )
+            lbl.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+            grid_parent.addSubview_(lbl)
+            self.col_headers.append(lbl)
+
+        # Row headers — numbers for large, "OUT N" for small
+        for out_idx in range(num_out):
+            text = str(out_idx + 1) if large else f"OUT {out_idx + 1}"
+            row_lbl = _label(
+                NSMakeRect(0, 0, ROW_LABEL_W - 8, MATRIX_CELL),
+                text, size=9, bold=True, color=TEXT_WHITE if large else TEXT_DIM,
+                align=NSRightTextAlignment,
+            )
+            row_lbl.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+            grid_parent.addSubview_(row_lbl)
+            self.row_headers.append(row_lbl)
+
+        # Create ALL buttons (for both large and small grids)
+        for out_idx in range(num_out):
+            for in_idx in range(num_in):
+                btn = MatrixButton.alloc().initWithFrame_(NSMakeRect(0, 0, MATRIX_CELL, MATRIX_CELL))
+                btn.output_idx = out_idx
+                btn.input_idx = in_idx
+                btn.setTitle_("")
+                btn.setBordered_(False)
+                btn.setWantsLayer_(True)
+                btn.layer().setCornerRadius_(2 if large else 4)
+                btn.layer().setBackgroundColor_(_cg(*INACTIVE_RGB))
+                btn.setTarget_(self)
+                btn.setAction_(objc.selector(self.matrixClicked_, signature=b"v@:@"))
+                grid_parent.addSubview_(btn)
+                self.matrix_buttons[(out_idx, in_idx)] = btn
+
+        # Bring crosshairs and overlay to front (above newly added buttons)
+        if hasattr(self, 'crosshair_h'):
+            self.crosshair_h.removeFromSuperview()
+            self.matrix_bg.addSubview_(self.crosshair_h)
+        if hasattr(self, 'crosshair_v'):
+            self.crosshair_v.removeFromSuperview()
+            self.matrix_bg.addSubview_(self.crosshair_v)
+        if hasattr(self, 'matrix_overlay'):
+            self.matrix_overlay.removeFromSuperview()
+            self.matrix_bg.addSubview_(self.matrix_overlay)
+
+        # Layout and refresh
+        self._layout_matrix()
+        self.refresh_matrix()
+        self.apply_font_settings()
+        self._refresh_preset_popup()
 
     def windowDidResize_(self, notification):
         f = self.window.frame()
@@ -769,11 +980,10 @@ class AppController(NSObject):
         mw = int(self.matrix_bg.frame().size.width)
         mh = int(self.matrix_bg.frame().size.height)
 
-        gap = 2
         col_header_h = 28
         title_area_h = 50  # space for title + subtitle
 
-        # Position title and subtitle at top
+        # Position title and subtitle at top of matrix_bg (always visible)
         self.matrix_title.setFrame_(NSMakeRect(10, mh - 28, 200, 20))
         self.matrix_subtitle.setFrame_(NSMakeRect(10, mh - 46, 350, 16))
 
@@ -787,23 +997,58 @@ class AppController(NSObject):
                 lbl.setFrame_(NSMakeRect(hk_x + i * (hk_w + hk_gap), mh - 28, hk_w, 20))
             self._refresh_hotkey_indicators()
 
-        # Available space for the grid (below titles + column headers, above bottom margin)
-        available_w = mw - ROW_LABEL_W - 20
-        available_h = mh - title_area_h - col_header_h - 20  # 20 = margins
+        n_cols = self._num_inputs
+        n_rows = self._num_outputs
+        large = max(n_cols, n_rows) > 10
 
-        # Cell size: smallest of width-fit and height-fit, always square
-        cell_from_w = (available_w - gap * (NUM_IO - 1)) // NUM_IO
-        cell_from_h = (available_h - gap * (NUM_IO - 1)) // NUM_IO
-        cell = max(30, min(cell_from_w, cell_from_h))
+        # Fit to window — cell size scales with header font setting
+        from videohub_controller.settings_window import DEFAULT_GRID_HEADER_SIZE
+        grid_font = self.presets.get_setting("grid_header_font_size", DEFAULT_GRID_HEADER_SIZE)
+        font_scale = grid_font / DEFAULT_GRID_HEADER_SIZE
+        gap = 0 if large else 2
+        base_min = 12 if n_cols >= 80 or n_rows >= 80 else 20
+        min_cell = max(base_min, int(base_min * font_scale))
+        row_lbl_w = 40 if large else ROW_LABEL_W
+        available_w = mw - row_lbl_w - 20
+        available_h = mh - title_area_h - col_header_h - 20
+        has_scroll = hasattr(self, '_grid_scroll') and self._grid_scroll is not None
 
-        # Grid dimensions
-        grid_w = NUM_IO * cell + (NUM_IO - 1) * gap
-        grid_h = NUM_IO * cell + (NUM_IO - 1) * gap
+        if has_scroll:
+            # Scrollable grid — use min_cell, grid can exceed visible area
+            cell = min_cell
+            grid_w = n_cols * cell + (n_cols - 1) * gap
+            grid_h = n_rows * cell + (n_rows - 1) * gap
 
-        # Pin grid to top-left: column headers right below title area
-        grid_x = ROW_LABEL_W + (available_w - grid_w) // 2
-        col_header_y = mh - title_area_h - col_header_h
-        grid_start_y = col_header_y  # first row starts just below column headers
+            # Resize scroll view to fill below title
+            scroll_h = mh - 30  # below title
+            self._grid_scroll.setFrame_(NSMakeRect(0, 0, mw, scroll_h))
+
+            # Size container to fit full grid
+            container_w = max(mw, row_lbl_w + grid_w + 20)
+            container_h = max(scroll_h, col_header_h + grid_h + 20)
+            self._grid_container.setFrame_(NSMakeRect(0, 0, container_w, container_h))
+
+            # Position grid in container (bottom-left origin)
+            grid_x = row_lbl_w
+            col_header_y = container_h - col_header_h
+            grid_start_y = col_header_y
+
+            # Scroll to top-left
+            self._grid_container.scrollPoint_((0, container_h))
+        else:
+            # Fit to window
+            cell_from_w = (available_w - gap * (n_cols - 1)) // max(n_cols, 1)
+            if not large:
+                cell = max(min_cell, cell_from_w)
+            else:
+                cell_from_h = (available_h - gap * (n_rows - 1)) // max(n_rows, 1)
+                cell = max(min_cell, min(cell_from_w, cell_from_h))
+
+            grid_w = n_cols * cell + (n_cols - 1) * gap
+            grid_h = n_rows * cell + (n_rows - 1) * gap
+            grid_x = row_lbl_w + max(0, (available_w - grid_w) // 2)
+            col_header_y = mh - title_area_h - col_header_h
+            grid_start_y = col_header_y
 
         # Store geometry for crosshair hover
         self._grid_x = grid_x
@@ -814,19 +1059,60 @@ class AppController(NSObject):
         self._grid_h = grid_h
 
         # Column headers
-        for i in range(NUM_IO):
-            x = grid_x + i * (cell + gap)
-            self.col_headers[i].setFrame_(NSMakeRect(x, col_header_y, cell, col_header_h))
+        # Column headers
+        stride = cell + gap
+        # Position IN/OUT marker labels — stacked, right-justified, arrow over arrow
+        if hasattr(self, '_in_marker') and self._in_marker:
+            self._in_marker.setAlignment_(NSRightTextAlignment)
+            self._in_marker.setFrame_(NSMakeRect(grid_x - row_lbl_w, col_header_y + 14, row_lbl_w - 4, 12))
+        if hasattr(self, '_out_marker') and self._out_marker:
+            self._out_marker.setAlignment_(NSRightTextAlignment)
+            self._out_marker.setFrame_(NSMakeRect(grid_x - row_lbl_w, col_header_y + 1, row_lbl_w - 4, 12))
 
-        # Row headers and buttons (top row = out_idx 0, placed highest)
-        for out_idx in range(NUM_IO):
-            row_y = grid_start_y - (out_idx + 1) * (cell + gap)
-            self.row_headers[out_idx].setFrame_(NSMakeRect(grid_x - ROW_LABEL_W, row_y, ROW_LABEL_W - 8, cell))
+        if n_cols > 10:
+            # Large grid — show number on every cell at fixed 8pt
+            num_font = NSFont.boldSystemFontOfSize_(8)
+            for i in range(n_cols):
+                if i < len(self.col_headers):
+                    x = grid_x + i * stride
+                    self.col_headers[i].setFont_(num_font)
+                    self.col_headers[i].setAlignment_(NSCenterTextAlignment)
+                    self.col_headers[i].setFrame_(NSMakeRect(x, col_header_y, stride, col_header_h))
+                    self.col_headers[i].setHidden_(False)
+        else:
+            hdr_font = NSFont.boldSystemFontOfSize_(min(grid_font, max(9, cell * 0.35)))
+            for i in range(n_cols):
+                if i < len(self.col_headers):
+                    x = grid_x + i * stride
+                    self.col_headers[i].setFont_(hdr_font)
+                    self.col_headers[i].setFrame_(NSMakeRect(x, col_header_y, cell, col_header_h))
+                    self.col_headers[i].setHidden_(False)
 
-            for in_idx in range(NUM_IO):
-                x = grid_x + in_idx * (cell + gap)
-                btn = self.matrix_buttons[(out_idx, in_idx)]
-                btn.setFrame_(NSMakeRect(x, row_y, cell, cell))
+        # Row headers + button grid
+        small_headers = n_rows > 10
+
+        for out_idx in range(n_rows):
+            row_y = grid_start_y - (out_idx + 1) * stride
+
+            # Row header
+            if out_idx < len(self.row_headers):
+                if small_headers:
+                    self.row_headers[out_idx].setFont_(num_font)
+                    self.row_headers[out_idx].setFrame_(
+                        NSMakeRect(grid_x - row_lbl_w, row_y, row_lbl_w - 4, cell))
+                    self.row_headers[out_idx].setHidden_(False)
+                else:
+                    self.row_headers[out_idx].setFont_(hdr_font)
+                    self.row_headers[out_idx].setFrame_(
+                        NSMakeRect(grid_x - row_lbl_w, row_y, row_lbl_w - 4, cell))
+                    self.row_headers[out_idx].setHidden_(False)
+
+            # Buttons for this row
+            for in_idx in range(n_cols):
+                if (out_idx, in_idx) in self.matrix_buttons:
+                    x = grid_x + in_idx * stride
+                    self.matrix_buttons[(out_idx, in_idx)].setFrame_(
+                        NSMakeRect(x, row_y, cell, cell))
 
         # Refresh overlay tracking area to match new bounds
         if hasattr(self, 'matrix_overlay'):
@@ -837,15 +1123,29 @@ class AppController(NSObject):
     # -- Actions --
 
     def discoverDevices_(self, sender):
-        """Discover Videohubs on the local network via Bonjour."""
-        self.discover_btn.setEnabled_(False)
+        """Discover Videohubs on the local network via Bonjour. Toggle to cancel."""
+        if hasattr(self, '_discover_cancel') and self._discover_cancel and not self._discover_cancel.is_set():
+            # Already discovering — cancel it
+            self._discover_cancel.set()
+            self.discover_btn.setTitle_("Discover")
+            self.set_status("Discovery cancelled.")
+            return
+        self._discover_cancel = threading.Event()
+        self.discover_btn.setTitle_("Cancel")
         self.set_status("Discovering Videohubs on the network...")
         threading.Thread(target=self._do_discover, daemon=True).start()
+
+    def cancelOperation_(self, sender):
+        """Called by Cocoa when Escape is pressed."""
+        if hasattr(self, '_discover_cancel') and self._discover_cancel and not self._discover_cancel.is_set():
+            self._discover_cancel.set()
+            self.discover_btn.setTitle_("Discover")
+            self.set_status("Discovery cancelled.")
 
     @objc.python_method
     def _do_discover(self):
         from videohub_controller.connection import discover_videohubs
-        devices = discover_videohubs(timeout=3.0)
+        devices = discover_videohubs(timeout=5.0, cancel_event=self._discover_cancel)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             objc.selector(self._discoveryDone_, signature=b"v@:@"),
             devices if devices else None,
@@ -853,7 +1153,11 @@ class AppController(NSObject):
         )
 
     def _discoveryDone_(self, devices):
-        self.discover_btn.setEnabled_(True)
+        self.discover_btn.setTitle_("Discover")
+        cancelled = self._discover_cancel and self._discover_cancel.is_set()
+        self._discover_cancel = None
+        if cancelled:
+            return
         if not devices or len(devices) == 0:
             self.set_status("No Videohubs found. Enter IP manually.")
             return
@@ -918,9 +1222,10 @@ class AppController(NSObject):
         self.connect_btn.setTitle_("Disconnect")
         self.connect_btn.setEnabled_(True)
         self.ip_field.setEditable_(False)
+        model = self.hub.model_name or "Videohub"
         self.status_label.setStringValue_("Connected")
         self.status_dot.setTextColor_(GREEN)
-        self.set_status("Connected to Videohub")
+        self.set_status(f"Connected to {model}")
 
     @objc.python_method
     def _on_disconnect(self):
@@ -949,6 +1254,12 @@ class AppController(NSObject):
         )
 
     def refreshAll_(self, _):
+        # Check if hardware reported different I/O count — rebuild if needed
+        if (self.hub.num_inputs != self._num_inputs or
+                self.hub.num_outputs != self._num_outputs):
+            self._rebuild_io(self.hub.num_inputs, self.hub.num_outputs)
+            self._update_lcd_idle()
+            return
         self.refresh_labels()
         self.refresh_matrix()
         if self._lcd_selected_out is not None:
@@ -1011,7 +1322,8 @@ class AppController(NSObject):
             name = name_field.stringValue().strip()
             if name:
                 self.presets.save(
-                    name, self.hub.routing, self.hub.input_labels, self.hub.output_labels
+                    name, self.hub.routing, self.hub.input_labels, self.hub.output_labels,
+                    num_inputs=self._num_inputs, num_outputs=self._num_outputs,
                 )
                 self._refresh_preset_popup()
                 self._refresh_hotkey_indicators()
@@ -1143,28 +1455,33 @@ class AppController(NSObject):
 
     @objc.python_method
     def refresh_labels(self):
-        for i in range(NUM_IO):
-            self.input_entries[i].setStringValue_(self.hub.input_labels[i])
-            self.output_entries[i].setStringValue_(self.hub.output_labels[i])
+        for i in range(self._num_inputs):
+            if i < len(self.input_entries) and i < len(self.hub.input_labels):
+                self.input_entries[i].setStringValue_(self.hub.input_labels[i])
+        for i in range(self._num_outputs):
+            if i < len(self.output_entries) and i < len(self.hub.output_labels):
+                self.output_entries[i].setStringValue_(self.hub.output_labels[i])
         self.refresh_matrix_headers()
 
     @objc.python_method
     def refresh_matrix_headers(self):
-        # Always show IN/OUT abbreviated format in the matrix
-        for i in range(NUM_IO):
-            self.col_headers[i].setStringValue_(f"IN {i + 1}")
-            self.row_headers[i].setStringValue_(f"OUT {i + 1}")
+        large = max(self._num_inputs, self._num_outputs) > 10
+        for i in range(len(self.col_headers)):
+            self.col_headers[i].setStringValue_(str(i + 1) if large else f"IN {i + 1}")
+        for i in range(len(self.row_headers)):
+            self.row_headers[i].setStringValue_(str(i + 1) if large else f"OUT {i + 1}")
 
     @objc.python_method
     def refresh_matrix(self):
         active_cg = _cg(0.90, 0.78, 0.10)
         inactive_cg = _cg(*INACTIVE_RGB)
-        for out_idx in range(NUM_IO):
-            active_in = self.hub.routing[out_idx]
-            for in_idx in range(NUM_IO):
+        small = self._grid_cell < 20  # no dot for tiny cells, just fill color
+        for out_idx in range(self._num_outputs):
+            active_in = self.hub.routing[out_idx] if out_idx < len(self.hub.routing) else -1
+            for in_idx in range(self._num_inputs):
                 btn = self.matrix_buttons[(out_idx, in_idx)]
                 if in_idx == active_in:
-                    btn.setTitle_("\u25cf")
+                    btn.setTitle_("" if small else "\u25cf")
                     btn.layer().setBackgroundColor_(active_cg)
                 else:
                     btn.setTitle_("")
@@ -1191,8 +1508,9 @@ class AppController(NSObject):
     def _update_lcd_idle(self):
         """Set the LCD to its idle/disconnected state."""
         self._lcd_idle = True
+        model = self.hub.model_name or "VIDEOHUB 10x10 12G"
         self.lcd_src_header.setStringValue_("")
-        self.lcd_src_name.setStringValue_("VIDEOHUB 10x10 12G")
+        self.lcd_src_name.setStringValue_(model)
         self.lcd_src_name.setAlignment_(NSCenterTextAlignment)
         self.lcd_dest_header.setStringValue_("")
         self.lcd_dest_name.setStringValue_("No route selected")
@@ -1241,21 +1559,26 @@ class AppController(NSObject):
         """Show crosshair lines at the hovered grid cell."""
         cell = self._grid_cell
         gap = self._grid_gap
-        stride = cell + gap
+        stride = max(cell + gap, 1)
 
         # Which column (input) and row (output)?
-        # Use floor (not int) so positions left of / above the grid give -1, not 0
         col = math.floor((pt.x - self._grid_x) / stride)
         row = math.floor((self._grid_start_y - pt.y) / stride)
 
-        if 0 <= col < NUM_IO and 0 <= row < NUM_IO:
+        # Skip if same cell as last hover (throttle for large grids)
+        last = getattr(self, '_last_hover', (-1, -1))
+        if (col, row) == last:
+            return
+        self._last_hover = (col, row)
+
+        if 0 <= col < self._num_inputs and 0 <= row < self._num_outputs:
             # Cell origin
             cx = self._grid_x + col * stride
             ry = self._grid_start_y - (row + 1) * stride + gap
 
             # Vertical line: center of column, spans full grid height
             vx = cx + cell // 2
-            vy = self._grid_start_y - NUM_IO * stride + gap
+            vy = self._grid_start_y - self._num_outputs * stride + gap
             self.crosshair_v.setFrame_(NSMakeRect(vx - 1, vy, 2, self._grid_h))
             self.crosshair_v.setHidden_(False)
 
@@ -1343,9 +1666,8 @@ class AppController(NSObject):
         self.status_label.setFrame_(NSMakeRect(cv_w - 200, center_y, 180, title_text_h))
         self.status_dot.setFrame_(NSMakeRect(cv_w - 130, center_y, 20, title_text_h))
 
-        # Update minimum window height to account for resized title bar
-        labels_content_h = 30 + 6 + (NUM_IO * 28) + 20 + 24 + 6 + (NUM_IO * 28) + 10
-        min_h = header_h + CONN_BAR_H + labels_content_h + BOTTOM_BAR_H + 50
+        # Update minimum window height
+        min_h = header_h + CONN_BAR_H + 300 + BOTTOM_BAR_H
         self.window.setMinSize_((900, min_h))
 
         # Grow the window if it's now smaller than the minimum
@@ -1375,11 +1697,13 @@ class AppController(NSObject):
         for tf in self.output_entries:
             tf.setFont_(NSFont.systemFontOfSize_(label_size))
 
-        # Grid column/row headers
-        for lbl in self.col_headers:
-            lbl.setFont_(NSFont.boldSystemFontOfSize_(grid_size))
-        for lbl in self.row_headers:
-            lbl.setFont_(NSFont.boldSystemFontOfSize_(grid_size))
+        # Grid column/row headers — only override font for small grids
+        # Large grids have their font set by _layout_matrix
+        if max(self._num_inputs, self._num_outputs) <= 10:
+            for lbl in self.col_headers:
+                lbl.setFont_(NSFont.boldSystemFontOfSize_(grid_size))
+            for lbl in self.row_headers:
+                lbl.setFont_(NSFont.boldSystemFontOfSize_(grid_size))
 
     @objc.python_method
     def _refresh_preset_popup(self):
@@ -1387,17 +1711,22 @@ class AppController(NSObject):
         old_raw = self.preset_popup.titleOfSelectedItem() or ""
         old_name = _strip_hotkey_prefix(old_raw)
 
+        # Only show presets matching current I/O count
+        filtered_names = self.presets.names(
+            num_inputs=self._num_inputs, num_outputs=self._num_outputs
+        )
+
         # Build reverse map: preset name -> hotkey
         bindings = self.presets.get_key_bindings()
-        preset_names = set(self.presets.names())
+        filtered_set = set(filtered_names)
         name_to_key = {}
         for key, bound_name in bindings.items():
-            if bound_name and bound_name in preset_names:
+            if bound_name and bound_name in filtered_set:
                 name_to_key[bound_name] = key
 
         self.preset_popup.removeAllItems()
         self.preset_popup.addItemWithTitle_("\u2014 Select Preset \u2014")
-        for name in self.presets.names():
+        for name in filtered_names:
             hotkey = name_to_key.get(name, "")
             if hotkey:
                 self.preset_popup.addItemWithTitle_(f"[{hotkey}]  {name}")
@@ -1446,15 +1775,15 @@ class AppController(NSObject):
         # Restore routing
         routing = session.get("routing", [])
         for i, in_idx in enumerate(routing):
-            if i < NUM_IO and 0 <= in_idx < NUM_IO:
+            if i < self._num_outputs and 0 <= in_idx < self._num_inputs:
                 self.hub.routing[i] = in_idx
 
         # Restore labels
         for i, lbl in enumerate(session.get("input_labels", [])):
-            if i < NUM_IO:
+            if i < self.hub.num_inputs:
                 self.hub.input_labels[i] = lbl
         for i, lbl in enumerate(session.get("output_labels", [])):
-            if i < NUM_IO:
+            if i < self.hub.num_outputs:
                 self.hub.output_labels[i] = lbl
 
         self.refresh_labels()
@@ -1484,7 +1813,7 @@ class AppController(NSObject):
 
         # Restore LCD display
         lcd_out = session.get("lcd_output")
-        if lcd_out is not None and 0 <= lcd_out < NUM_IO:
+        if lcd_out is not None and 0 <= lcd_out < self._num_outputs:
             self._update_lcd(lcd_out)
 
     @objc.python_method

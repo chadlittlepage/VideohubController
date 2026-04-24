@@ -13,10 +13,25 @@ import threading
 
 VIDEOHUB_PORT = 9990
 VIDEOHUB_BONJOUR_TYPE = "_videohub._tcp."
-NUM_IO = 10
+NUM_IO = 10  # default, overridden by hardware or settings
+
+# Known Videohub models and their I/O configurations
+VIDEOHUB_MODELS = {
+    "Auto-Detect": (10, 10),
+    "Videohub Mini 4x2 12G": (4, 2),
+    "Videohub Mini 6x2 12G": (6, 2),
+    "Videohub Mini 8x4 12G": (8, 4),
+    "Videohub 10x10 12G": (10, 10),
+    "Smart Videohub CleanSwitch 12x12": (12, 12),
+    "Videohub 20x20 12G": (20, 20),
+    "Videohub 40x40 12G": (40, 40),
+    "Videohub 80x80 12G": (80, 80),
+}
+MODEL_NAMES = list(VIDEOHUB_MODELS.keys())
 
 
-def discover_videohubs(timeout: float = 3.0, callback=None) -> list[dict]:
+def discover_videohubs(timeout: float = 3.0, callback=None,
+                       cancel_event: threading.Event = None) -> list[dict]:
     """Discover Videohubs on the local network via Bonjour/mDNS.
 
     Returns a list of dicts: [{"name": "...", "host": "...", "port": 9990}, ...]
@@ -28,6 +43,7 @@ def discover_videohubs(timeout: float = 3.0, callback=None) -> list[dict]:
     Args:
         timeout: How long to browse (seconds).
         callback: Optional callable(name, host, port) called per discovery.
+        cancel_event: Optional threading.Event; set it to cancel the browse early.
     """
     from Foundation import NSObject, NSRunLoop, NSDate, NSDefaultRunLoopMode
 
@@ -61,9 +77,12 @@ def discover_videohubs(timeout: float = 3.0, callback=None) -> list[dict]:
         browser.setDelegate_(delegate)
         browser.searchForServicesOfType_inDomain_(VIDEOHUB_BONJOUR_TYPE, "local.")
 
-        # Pump run loop for the timeout duration
+        # Pump run loop for the timeout duration, checking for cancel
         deadline = NSDate.dateWithTimeIntervalSinceNow_(timeout)
         while NSDate.date().compare_(deadline) < 0:
+            if cancel_event and cancel_event.is_set():
+                print("[discovery] Cancelled by user")
+                break
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
                 NSDefaultRunLoopMode,
                 NSDate.dateWithTimeIntervalSinceNow_(0.1),
@@ -85,12 +104,23 @@ class VideohubConnection:
         on_state_update: callable = None,
         on_connect: callable = None,
         on_disconnect: callable = None,
+        num_inputs: int = NUM_IO,
+        num_outputs: int = NUM_IO,
     ):
         self.sock: socket.socket | None = None
         self.connected = False
-        self.input_labels = [f"Input {i + 1}" for i in range(NUM_IO)]
-        self.output_labels = [f"Output {i + 1}" for i in range(NUM_IO)]
-        self.routing = [0] * NUM_IO  # routing[output_idx] = input_idx
+        # Device info (populated from VIDEOHUB DEVICE: block)
+        self.model_name: str = ""
+        self.friendly_name: str = ""
+        self.unique_id: str = ""
+        self.device_present: bool = False
+        self.num_inputs: int = num_inputs
+        self.num_outputs: int = num_outputs
+        self.protocol_version: str = ""
+        # Dynamic I/O arrays sized to the current configuration
+        self.input_labels = [f"Input {i + 1}" for i in range(num_inputs)]
+        self.output_labels = [f"Output {i + 1}" for i in range(num_outputs)]
+        self.routing = [0] * num_outputs  # routing[output_idx] = input_idx
         self.on_state_update = on_state_update
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
@@ -184,7 +214,52 @@ class VideohubConnection:
         data = lines[1:]
 
         with self.lock:
-            if header == "INPUT LABELS":
+            if header == "PROTOCOL PREAMBLE":
+                for line in data:
+                    if line.startswith("Version:"):
+                        self.protocol_version = line.split(":", 1)[1].strip()
+                        print(f"[connection] Protocol version: {self.protocol_version}")
+
+            elif header == "VIDEOHUB DEVICE":
+                for line in data:
+                    if ": " in line:
+                        key, val = line.split(": ", 1)
+                        key = key.strip()
+                        val = val.strip()
+                        if key == "Device present":
+                            self.device_present = (val == "true")
+                        elif key == "Model name":
+                            self.model_name = val
+                            print(f"[connection] Model: {val}")
+                        elif key == "Friendly name":
+                            self.friendly_name = val
+                        elif key == "Unique ID":
+                            self.unique_id = val
+                        elif key == "Video inputs":
+                            try:
+                                new_in = int(val)
+                                if new_in != self.num_inputs:
+                                    self.num_inputs = new_in
+                                    self.input_labels = [
+                                        f"Input {i + 1}" for i in range(new_in)
+                                    ]
+                                    print(f"[connection] Resized inputs to {new_in}")
+                            except ValueError:
+                                pass
+                        elif key == "Video outputs":
+                            try:
+                                new_out = int(val)
+                                if new_out != self.num_outputs:
+                                    self.num_outputs = new_out
+                                    self.output_labels = [
+                                        f"Output {i + 1}" for i in range(new_out)
+                                    ]
+                                    self.routing = [0] * new_out
+                                    print(f"[connection] Resized outputs to {new_out}")
+                            except ValueError:
+                                pass
+
+            elif header == "INPUT LABELS":
                 for line in data:
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
@@ -192,7 +267,7 @@ class VideohubConnection:
                             idx = int(parts[0])
                         except ValueError:
                             continue
-                        if 0 <= idx < NUM_IO:
+                        if 0 <= idx < self.num_inputs:
                             self.input_labels[idx] = parts[1]
             elif header == "OUTPUT LABELS":
                 for line in data:
@@ -202,7 +277,7 @@ class VideohubConnection:
                             idx = int(parts[0])
                         except ValueError:
                             continue
-                        if 0 <= idx < NUM_IO:
+                        if 0 <= idx < self.num_outputs:
                             self.output_labels[idx] = parts[1]
             elif header == "VIDEO OUTPUT ROUTING":
                 for line in data:
@@ -213,7 +288,7 @@ class VideohubConnection:
                             in_idx = int(parts[1])
                         except ValueError:
                             continue
-                        if 0 <= out_idx < NUM_IO and 0 <= in_idx < NUM_IO:
+                        if 0 <= out_idx < self.num_outputs and 0 <= in_idx < self.num_inputs:
                             self.routing[out_idx] = in_idx
 
         if self.on_state_update:

@@ -110,6 +110,35 @@ KEY_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 NONE_LABEL = "\u2014 None \u2014"
 
 
+class ModelSelectDelegate(NSObject):
+    """Handles device model popup changes."""
+
+    controller = objc.ivar("controller")
+
+    @objc.python_method
+    def initWithController_(self, ctrl):
+        self = self.init()
+        if self:
+            self.controller = ctrl
+        return self
+
+    def changed_(self, sender):
+        from videohub_controller.connection import MODEL_NAMES, VIDEOHUB_MODELS
+        idx = sender.indexOfSelectedItem()
+        model_key = MODEL_NAMES[idx]
+        self.controller.presets.settings["device_model"] = model_key
+        self.controller.presets._write()
+        num_in, num_out = VIDEOHUB_MODELS[model_key]
+        if model_key != "Auto-Detect" and not self.controller.hub.connected:
+            self.controller.hub.num_inputs = num_in
+            self.controller.hub.num_outputs = num_out
+            self.controller.hub.input_labels = [f"Input {i+1}" for i in range(num_in)]
+            self.controller.hub.output_labels = [f"Output {i+1}" for i in range(num_out)]
+            self.controller.hub.routing = [0] * num_out
+            self.controller._rebuild_io(num_in, num_out)
+            self.controller.set_status(f"Set to {model_key} ({num_in}x{num_out})")
+
+
 class ToggleDelegate(NSObject):
     """Handles checkbox toggle for Keep on Top / Global Hotkeys."""
 
@@ -165,7 +194,7 @@ def show_settings_window(controller):
         _settings_window.makeKeyAndOrderFront_(None)
         return
 
-    win_w, win_h = 400, 880
+    win_w, win_h = 400, 940
     style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 
     from AppKit import NSWindow, NSFloatingWindowLevel
@@ -185,6 +214,35 @@ def show_settings_window(controller):
     delegates = []
 
     y = win_h - 40
+    cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Device Model", size=14, bold=True))
+
+    y -= 30
+    from videohub_controller.connection import MODEL_NAMES, VIDEOHUB_MODELS
+    model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+        NSMakeRect(20, y, 360, 24), False
+    )
+    model_popup.removeAllItems()
+    for name in MODEL_NAMES:
+        num_in, num_out = VIDEOHUB_MODELS[name]
+        if name == "Auto-Detect":
+            model_popup.addItemWithTitle_("Auto-Detect (from hardware)")
+        else:
+            model_popup.addItemWithTitle_(f"{name}  ({num_in} in / {num_out} out)")
+    # Select saved model
+    saved_model = controller.presets.settings.get("device_model", "Auto-Detect")
+    for i in range(model_popup.numberOfItems()):
+        title = str(model_popup.itemTitleAtIndex_(i))
+        if title.startswith(saved_model):
+            model_popup.selectItemAtIndex_(i)
+            break
+
+    model_del = ModelSelectDelegate.alloc().initWithController_(controller)
+    model_popup.setTarget_(model_del)
+    model_popup.setAction_(objc.selector(model_del.changed_, signature=b"v@:@"))
+    delegates.append(model_del)
+    cv.addSubview_(model_popup)
+
+    y -= 40
     cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Font Sizes", size=14, bold=True))
 
     y -= 50

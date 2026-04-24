@@ -85,11 +85,14 @@ class PresetManager:
         self.last_ip = ip
         self._write()
 
-    def save(self, name: str, routing: list, input_labels: list, output_labels: list) -> None:
+    def save(self, name: str, routing: list, input_labels: list, output_labels: list,
+             num_inputs: int = 10, num_outputs: int = 10) -> None:
         self.presets[name] = {
             "routing": list(routing),
             "input_labels": list(input_labels),
             "output_labels": list(output_labels),
+            "num_inputs": num_inputs,
+            "num_outputs": num_outputs,
         }
         self._write()
 
@@ -100,8 +103,17 @@ class PresetManager:
     def get(self, name: str) -> dict | None:
         return self.presets.get(name)
 
-    def names(self) -> list[str]:
-        return list(self.presets.keys())
+    def names(self, num_inputs: int = None, num_outputs: int = None) -> list[str]:
+        """Return preset names, optionally filtered by I/O count."""
+        if num_inputs is None and num_outputs is None:
+            return list(self.presets.keys())
+        result = []
+        for name, data in self.presets.items():
+            p_in = data.get("num_inputs", 10)
+            p_out = data.get("num_outputs", 10)
+            if p_in == num_inputs and p_out == num_outputs:
+                result.append(name)
+        return result
 
     def get_setting(self, key: str, default: float = 0.0) -> float:
         return float(self.settings.get(key, default))

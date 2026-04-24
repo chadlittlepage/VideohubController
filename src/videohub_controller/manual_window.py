@@ -456,6 +456,8 @@ def show_manual_window() -> None:
     close_btn.setAutoresizingMask_(1 | 32)
     content.addSubview_(close_btn)
 
+    from AppKit import NSFloatingWindowLevel
+    window.setLevel_(NSFloatingWindowLevel + 1)
     window.makeKeyAndOrderFront_(None)
     if hasattr(NSApp, "activate"):
         NSApp.activate()
