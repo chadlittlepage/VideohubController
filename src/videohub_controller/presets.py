@@ -21,6 +21,10 @@ _LEGACY_PATH = Path.home() / ".videohub_controller.json"
 CONFIG_PATH = _SHARED_PATH
 
 
+# Settings keys that are app-wide, NOT per-device
+_GLOBAL_SETTINGS = {"keep_on_top", "global_hotkeys"}
+
+
 class PresetManager:
     """Save and recall routing presets to disk."""
 
@@ -29,6 +33,8 @@ class PresetManager:
         self.last_ip: str = ""
         self.settings: dict = {}
         self.session: dict = {}
+        self.devices: dict = {}
+        self.last_device_id: str = ""
         self._load()
 
     def _load(self) -> None:
@@ -49,7 +55,27 @@ class PresetManager:
                 self.last_ip = data.get("last_ip", "")
                 self.settings = data.get("settings", {})
                 self.session = data.get("session", {})
-                print(f"[presets] Loaded config: {len(self.presets)} presets, ip={self.last_ip}, model={self.settings.get('device_model', 'Auto-Detect')}")
+                self.devices = data.get("devices", {})
+                self.last_device_id = data.get("last_device_id", "")
+                # Migrate pre-multi-device config: create a "legacy" device entry
+                if not self.devices and (self.presets or self.session):
+                    self.devices["legacy"] = {
+                        "friendly_name": "",
+                        "model_name": self.settings.get("device_model", ""),
+                        "ip": self.last_ip,
+                        "num_inputs": 10,
+                        "num_outputs": 10,
+                        "presets": dict(self.presets),
+                        "settings": {k: v for k, v in self.settings.items()
+                                     if k not in _GLOBAL_SETTINGS},
+                        "session": dict(self.session),
+                    }
+                    self.last_device_id = "legacy"
+                    print(f"[presets] Migrated config to multi-device format (legacy entry)")
+                n_devices = len(self.devices)
+                print(f"[presets] Loaded config: {len(self.presets)} presets, ip={self.last_ip}, "
+                      f"model={self.settings.get('device_model', 'Auto-Detect')}, "
+                      f"{n_devices} known device(s)")
             except Exception as e:
                 print(f"[presets] Failed to load config: {e}")
         else:
@@ -58,9 +84,11 @@ class PresetManager:
     def _write(self) -> None:
         data = {
             "last_ip": self.last_ip,
+            "last_device_id": self.last_device_id,
             "presets": self.presets,
             "settings": self.settings,
             "session": self.session,
+            "devices": self.devices,
         }
         try:
             _SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,4 +188,64 @@ class PresetManager:
         else:
             bindings.pop(key, None)
         self.settings["key_bindings"] = bindings
+        self._write()
+
+    # -- Multi-device support --
+
+    def save_device_state(self, unique_id: str, friendly_name: str = "",
+                          model_name: str = "", ip: str = "",
+                          num_inputs: int = 10, num_outputs: int = 10) -> None:
+        """Snapshot current top-level presets/settings/session into devices[unique_id]."""
+        # Preserve global settings (not per-device)
+        device_settings = {k: v for k, v in self.settings.items()
+                           if k not in _GLOBAL_SETTINGS}
+        self.devices[unique_id] = {
+            "friendly_name": friendly_name,
+            "model_name": model_name,
+            "ip": ip,
+            "num_inputs": num_inputs,
+            "num_outputs": num_outputs,
+            "presets": dict(self.presets),
+            "settings": device_settings,
+            "session": dict(self.session),
+        }
+        self.last_device_id = unique_id
+        # Remove legacy entry if we now have a real ID
+        if unique_id != "legacy" and "legacy" in self.devices:
+            del self.devices["legacy"]
+            print(f"[presets] Migrated legacy device -> {unique_id}")
+        self._write()
+        print(f"[presets] Saved device state: {unique_id} ({model_name or friendly_name})")
+
+    def load_device_state(self, unique_id: str) -> bool:
+        """Load devices[unique_id] into top-level presets/settings/session.
+        Returns True if device was found, False if new/unknown device."""
+        dev = self.devices.get(unique_id)
+        if not dev:
+            print(f"[presets] No saved state for device {unique_id}")
+            return False
+        # Load per-device data into top-level (working copy)
+        self.presets = dict(dev.get("presets", {}))
+        # Merge device settings with global settings
+        global_vals = {k: self.settings[k] for k in _GLOBAL_SETTINGS
+                       if k in self.settings}
+        self.settings = dict(dev.get("settings", {}))
+        self.settings.update(global_vals)
+        self.session = dict(dev.get("session", {}))
+        self.last_ip = dev.get("ip", self.last_ip)
+        self.last_device_id = unique_id
+        self._write()
+        print(f"[presets] Loaded device state: {unique_id} "
+              f"({dev.get('model_name', '')} — {len(self.presets)} presets)")
+        return True
+
+    def get_known_devices(self) -> dict:
+        """Return the devices dict {unique_id: {friendly_name, model_name, ip, ...}}."""
+        return dict(self.devices)
+
+    def get_last_device_id(self) -> str:
+        return self.last_device_id
+
+    def set_last_device_id(self, unique_id: str) -> None:
+        self.last_device_id = unique_id
         self._write()

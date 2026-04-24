@@ -269,6 +269,36 @@ class PresetPopUpButton(NSPopUpButton):
             objc.super(PresetPopUpButton, self).mouseDown_(event)
 
 
+class DevicePopUpButton(NSPopUpButton):
+    """NSPopUpButton that shows a Rename context menu on right-click."""
+
+    _controller = objc.ivar("_controller")
+
+    @objc.python_method
+    def _showRenameMenu(self, event):
+        idx = self.indexOfSelectedItem()
+        ids = getattr(self._controller, '_device_popup_ids', [])
+        if idx < 0 or idx >= len(ids) or ids[idx] is None:
+            return
+        from AppKit import NSMenu, NSMenuItem
+        ctx = NSMenu.alloc().init()
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Rename\u2026", "renameDeviceFromMenu:", ""
+        )
+        item.setTarget_(self._controller)
+        ctx.addItem_(item)
+        NSMenu.popUpContextMenu_withEvent_forView_(ctx, event, self)
+
+    def rightMouseDown_(self, event):
+        self._showRenameMenu(event)
+
+    def mouseDown_(self, event):
+        if event.modifierFlags() & (1 << 18):  # Control-click
+            self._showRenameMenu(event)
+        else:
+            objc.super(DevicePopUpButton, self).mouseDown_(event)
+
+
 class MatrixButton(NSButton):
     """A crosspoint matrix button that knows its output/input indices."""
 
@@ -385,6 +415,9 @@ class AppController(NSObject):
         self._last_window_size: tuple = (0, 0)
         self._num_inputs: int = self.hub.num_inputs
         self._num_outputs: int = self.hub.num_outputs
+        self._current_device_id: str | None = self.presets.get_last_device_id() or None
+        self._device_identified: bool = False
+        self._discovered_devices: list = []  # cache of last discovery results
 
         self._build_window()
         self._install_key_monitor()
@@ -405,7 +438,7 @@ class AppController(NSObject):
         )
         n_in = self.hub.num_inputs
         n_out = self.hub.num_outputs
-        win_w = max(900, min(1400, LABEL_COL_W + ROW_LABEL_W + (n_in * (MATRIX_CELL + 2)) + 60))
+        win_w = max(920, min(1400, LABEL_COL_W + ROW_LABEL_W + (n_in * (MATRIX_CELL + 2)) + 60))
         win_h = min(900, HEADER_H + CONN_BAR_H + 40 + (n_out * (MATRIX_CELL + 2)) + 80 + BOTTOM_BAR_H)
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -415,9 +448,11 @@ class AppController(NSObject):
             False,
         )
         self.window.setTitle_(f"Videohub Controller v{__version__}")
+        # Remember window size/position across launches
+        self.window.setFrameAutosaveName_("VideohubControllerMain")
         # Min height: capped so large grids don't force a huge window
         min_h = HEADER_H + CONN_BAR_H + 300 + BOTTOM_BAR_H
-        self.window.setMinSize_((900, min_h))
+        self.window.setMinSize_((920, min_h))
         self.window.setBackgroundColor_(BG_DARK)
         # Force dark appearance so the app looks correct even in light mode
         from AppKit import NSAppearance
@@ -518,37 +553,38 @@ class AppController(NSObject):
         self.conn_bg.setAutoresizingMask_(W_SIZABLE | MIN_Y)
         cv.addSubview_(self.conn_bg)
 
+        lx = 10
         self.conn_bg.addSubview_(
-            _label(NSMakeRect(20, 10, 80, 24), "IP Address:", size=12, color=TEXT_DIM)
+            _label(NSMakeRect(lx, 10, 30, 24), "IP:", size=12, color=TEXT_DIM)
         )
+        lx += 30
 
-        ip_wrapper, self.ip_field = _editable(NSMakeRect(100, 10, 160, 24), placeholder="192.168.1.100")
+        ip_wrapper, self.ip_field = _editable(NSMakeRect(lx, 10, 140, 24), placeholder="192.168.1.100")
         self.conn_bg.addSubview_(ip_wrapper)
+        lx += 145
 
-        if self.presets.last_ip:
-            self.ip_field.setStringValue_(self.presets.last_ip)
-
-        self.connect_btn = NSButton.alloc().initWithFrame_(NSMakeRect(270, 8, 90, 28))
+        self.connect_btn = NSButton.alloc().initWithFrame_(NSMakeRect(lx, 8, 90, 28))
         self.connect_btn.setTitle_("Connect")
         self.connect_btn.setBezelStyle_(NSBezelStyleRounded)
         self.connect_btn.setTarget_(self)
         self.connect_btn.setAction_(objc.selector(self.toggleConnection_, signature=b"v@:@"))
         self.conn_bg.addSubview_(self.connect_btn)
+        lx += 95
 
-        self.discover_btn = NSButton.alloc().initWithFrame_(NSMakeRect(365, 8, 80, 28))
+        self.discover_btn = NSButton.alloc().initWithFrame_(NSMakeRect(lx, 8, 80, 28))
         self.discover_btn.setTitle_("Discover")
         self.discover_btn.setBezelStyle_(NSBezelStyleRounded)
         self.discover_btn.setTarget_(self)
         self.discover_btn.setAction_(objc.selector(self.discoverDevices_, signature=b"v@:@"))
         self.conn_bg.addSubview_(self.discover_btn)
 
-        # Preset controls (right-justified, even spacing)
+        # Right-side controls: laid out right-to-left, all pinned to right edge
         r = content_w
-        gap = 6
-        x = r - 15
+        gap = 5
+        x = r - 12
 
-        x -= 60
-        del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 60, 28))
+        x -= 65
+        del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 65, 28))
         del_btn.setTitle_("Delete")
         del_btn.setBezelStyle_(NSBezelStyleRounded)
         del_btn.setTarget_(self)
@@ -556,8 +592,8 @@ class AppController(NSObject):
         del_btn.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(del_btn)
 
-        x -= gap + 55
-        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 55, 28))
+        x -= gap + 58
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 58, 28))
         save_btn.setTitle_("Save")
         save_btn.setBezelStyle_(NSBezelStyleRounded)
         save_btn.setTarget_(self)
@@ -565,8 +601,8 @@ class AppController(NSObject):
         save_btn.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(save_btn)
 
-        x -= gap + 60
-        recall_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 60, 28))
+        x -= gap + 65
+        recall_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 8, 65, 28))
         recall_btn.setTitle_("Recall")
         recall_btn.setBezelStyle_(NSBezelStyleRounded)
         recall_btn.setTarget_(self)
@@ -574,23 +610,26 @@ class AppController(NSObject):
         recall_btn.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(recall_btn)
 
-        x -= gap + 180
+        x -= gap + 150
         self.preset_popup = PresetPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(x, 8, 180, 28), False
+            NSMakeRect(x, 8, 150, 28), False
         )
         self.preset_popup._controller = self
-        self.preset_popup.setBezelStyle_(1)  # NSBezelStyleRounded
+        self.preset_popup.setBezelStyle_(1)
         self._refresh_preset_popup()
         self.preset_popup.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(self.preset_popup)
 
-
-        x -= gap + 50
-        preset_lbl = _label(
-            NSMakeRect(x, 10, 50, 24), "Preset:", size=12, color=TEXT_DIM
+        x -= gap + 180
+        self.device_popup = DevicePopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(x, 8, 180, 28), False
         )
-        preset_lbl.setAutoresizingMask_(1)
-        self.conn_bg.addSubview_(preset_lbl)
+        self.device_popup._controller = self
+        self.device_popup.setTarget_(self)
+        self.device_popup.setAction_(objc.selector(self.deviceSelected_, signature=b"v@:@"))
+        self.device_popup.setAutoresizingMask_(1)  # pin to right
+        self.conn_bg.addSubview_(self.device_popup)
+        self._refresh_device_popup()
 
         # -- Main area (labels + matrix) -- built dynamically
         y -= 4
@@ -1201,6 +1240,12 @@ class AppController(NSObject):
             self.discover_btn.setTitle_("Discover")
             self.set_status("Discovery cancelled.")
             return
+        if self.hub.connected:
+            model = self.hub.model_name or "Videohub"
+            ip = self.ip_field.stringValue().strip()
+            self.set_status(f"Already connected to {model} at {ip}")
+            print(f"[discovery] Already connected — skipping")
+            return
         self._discover_cancel = threading.Event()
         self.discover_btn.setTitle_("Cancel")
         self.set_status("Discovering Videohubs on the network...")
@@ -1216,13 +1261,27 @@ class AppController(NSObject):
 
     @objc.python_method
     def _do_discover(self):
-        from videohub_controller.connection import discover_videohubs
+        from videohub_controller.connection import discover_videohubs, scan_port_9990, probe_device_info
+        from PyObjCTools import AppHelper
         devices = discover_videohubs(timeout=5.0, cancel_event=self._discover_cancel)
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            objc.selector(self._discoveryDone_, signature=b"v@:@"),
-            devices if devices else None,
-            False,
-        )
+        if not devices and not (self._discover_cancel and self._discover_cancel.is_set()):
+            # Bonjour found nothing — fall back to scanning port 9990 on local subnets
+            print("[discovery] Bonjour found nothing, falling back to port 9990 scan...")
+            AppHelper.callAfter(self.set_status, "No Bonjour response — scanning network for Videohubs...")
+            devices = scan_port_9990(cancel_event=self._discover_cancel)
+        # Probe each device for detailed info (unique_id, friendly_name)
+        for dev in devices:
+            if self._discover_cancel and self._discover_cancel.is_set():
+                break
+            info = probe_device_info(dev["host"])
+            if info:
+                dev.update(info)
+        AppHelper.callAfter(self._discoveryDoneList_, devices)
+
+    @objc.python_method
+    def _discoveryDoneList_(self, devices):
+        """Called via AppHelper.callAfter with a plain Python list."""
+        self._discoveryDone_(devices)
 
     def _discoveryDone_(self, devices):
         self.discover_btn.setTitle_("Discover")
@@ -1232,18 +1291,52 @@ class AppController(NSObject):
             print("[discovery] Cancelled by user")
             return
         if not devices or len(devices) == 0:
-            print("[discovery] No devices found")
-            self.set_status("No Videohubs found. Enter IP manually.")
+            # Last resort: if there's an IP in the field, try connecting to it
+            ip = self.ip_field.stringValue().strip()
+            if ip:
+                print(f"[discovery] No devices found — trying IP in field: {ip}")
+                self.set_status(f"No devices found — trying {ip}...")
+                self.connect_btn.setEnabled_(False)
+                threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+            else:
+                print("[discovery] No devices found, no IP in field")
+                self.set_status("No Videohubs found. Enter IP manually.")
             return
-        # Use the first discovered device
-        dev = devices[0]
-        ip = dev["host"]
-        name = dev["name"]
-        print(f"[discovery] Selected: {name} at {ip}")
-        self.ip_field.setStringValue_(ip)
-        self.set_status(f"Found: {name} at {ip} — connecting...")
-        self.connect_btn.setEnabled_(False)
-        threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+
+        # Cache discovered devices and refresh picker
+        self._discovered_devices = devices
+        self._refresh_device_popup()
+        print(f"[discovery] Found {len(devices)} device(s)")
+
+        if len(devices) == 1:
+            # Single device — auto-connect
+            dev = devices[0]
+            ip = dev["host"]
+            name = dev.get("model_name", dev.get("name", "Videohub"))
+            print(f"[discovery] Auto-connecting to {name} at {ip}")
+            self.ip_field.setStringValue_(ip)
+            self.set_status(f"Found: {name} — connecting...")
+            self.connect_btn.setEnabled_(False)
+            threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+        else:
+            # Multiple devices — check if last device is among them
+            last_id = self.presets.get_last_device_id()
+            auto_dev = None
+            for dev in devices:
+                if dev.get("unique_id") == last_id:
+                    auto_dev = dev
+                    break
+            if auto_dev:
+                ip = auto_dev["host"]
+                name = auto_dev.get("model_name", "Videohub")
+                print(f"[discovery] Auto-connecting to last device: {name} at {ip}")
+                self.ip_field.setStringValue_(ip)
+                self.set_status(f"Found {len(devices)} devices — reconnecting to {name}...")
+                self.connect_btn.setEnabled_(False)
+                threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+            else:
+                names = [d.get("model_name", d.get("name", "?")) for d in devices]
+                self.set_status(f"Found {len(devices)} devices: {', '.join(names)} — select one")
 
     def toggleConnection_(self, sender):
         if self.hub.connected:
@@ -1323,6 +1416,7 @@ class AppController(NSObject):
         self.set_status("Disconnected")
         print("[ui] Disconnected")
         self._lcd_selected_out = None
+        self._device_identified = False
         self._update_lcd_idle()
 
     @objc.python_method
@@ -1334,10 +1428,45 @@ class AppController(NSObject):
         )
 
     def refreshAll_(self, _):
+        # Auto-detect: if Device Model is Auto-Detect and hardware reported a model,
+        # switch the setting to match so presets/hotkeys/fonts are model-specific
+        saved_model = self.presets.settings.get("device_model", "Auto-Detect")
+        if saved_model == "Auto-Detect" and self.hub.model_name:
+            from videohub_controller.connection import VIDEOHUB_MODELS
+            for model_key, (m_in, m_out) in VIDEOHUB_MODELS.items():
+                if model_key == "Auto-Detect":
+                    continue
+                if m_in == self.hub.num_inputs and m_out == self.hub.num_outputs:
+                    print(f"[ui] Auto-detected model: {model_key} ({m_in}x{m_out})")
+                    self.presets.settings["device_model"] = model_key
+                    self.presets._write()
+                    # Refresh settings window and hotkey popups for new model
+                    invalidate_settings_window(self)
+                    self._refresh_preset_popup()
+                    self._refresh_hotkey_indicators()
+                    refresh_hotkey_popups(self)
+                    refresh_font_sliders(self)
+                    # Update status bar with detected model
+                    ip = self.ip_field.stringValue().strip()
+                    self.set_status(f"Connected to {model_key} at {ip}")
+                    break
+
+        # Device identification: once unique_id arrives, save/load per-device config
+        if self.hub.unique_id and not self._device_identified:
+            self._on_device_identified(self.hub.unique_id)
+
+        # Update status bar if model name arrived after initial connect
+        if self.hub.connected and self.hub.model_name:
+            current_status = self.info_label.stringValue() if hasattr(self, 'info_label') else ""
+            if current_status == "Connected to Videohub":
+                ip = self.ip_field.stringValue().strip()
+                self.set_status(f"Connected to {self.hub.model_name} at {ip}")
+
         # Check if hardware reported different I/O count — rebuild if needed
         if (self.hub.num_inputs != self._num_inputs or
                 self.hub.num_outputs != self._num_outputs):
             print(f"[ui] Hardware I/O changed: {self._num_inputs}x{self._num_outputs} -> {self.hub.num_inputs}x{self.hub.num_outputs}")
+            self._save_session()
             self._rebuild_io(self.hub.num_inputs, self.hub.num_outputs)
             self._update_lcd_idle()
             return
@@ -1353,12 +1482,13 @@ class AppController(NSObject):
         self._refresh_hotkey_indicators()
         out_idx = sender.output_idx
         in_idx = sender.input_idx
-        old_in = self.hub.routing[out_idx] if out_idx < len(self.hub.routing) else -1
+        with self.hub.lock:
+            old_in = self.hub.routing[out_idx] if out_idx < len(self.hub.routing) else -1
+            self.hub.routing[out_idx] = in_idx
+            in_name = self.hub.input_labels[in_idx]
+            out_name = self.hub.output_labels[out_idx]
         self.hub.set_route(out_idx, in_idx)
-        self.hub.routing[out_idx] = in_idx
         self.refresh_matrix()
-        in_name = self.hub.input_labels[in_idx]
-        out_name = self.hub.output_labels[out_idx]
         self.set_status(f"Routed: {in_name} -> {out_name}")
         print(f"[route] OUT {out_idx + 1} ({out_name}): IN {old_in + 1} -> IN {in_idx + 1} ({in_name}) (sent={'yes' if self.hub.connected else 'offline'})")
         self._show_crosshairs_at(out_idx, in_idx)
@@ -1404,13 +1534,17 @@ class AppController(NSObject):
         if result == NSAlertFirstButtonReturn:
             name = name_field.stringValue().strip()
             if name:
+                with self.hub.lock:
+                    routing = list(self.hub.routing)
+                    in_labels = list(self.hub.input_labels)
+                    out_labels = list(self.hub.output_labels)
                 self.presets.save(
-                    name, self.hub.routing, self.hub.input_labels, self.hub.output_labels,
+                    name, routing, in_labels, out_labels,
                     num_inputs=self._num_inputs, num_outputs=self._num_outputs,
                 )
                 self._refresh_preset_popup()
                 self._refresh_hotkey_indicators()
-                invalidate_settings_window()
+                invalidate_settings_window(self)
                 self.set_status(f"Saved preset: {name}")
                 print(f"[preset] Saved '{name}' ({self._num_inputs}x{self._num_outputs})")
 
@@ -1464,7 +1598,7 @@ class AppController(NSObject):
                 self.preset_popup.selectItemAtIndex_(i)
                 break
         self._refresh_hotkey_indicators()
-        invalidate_settings_window()
+        invalidate_settings_window(self)
         refresh_hotkey_popups(self)
         self.set_status(f'Renamed: "{old_name}" \u2192 "{new_name}"')
         print(f"[preset] Renamed '{old_name}' -> '{new_name}'")
@@ -1503,7 +1637,7 @@ class AppController(NSObject):
         self.presets.delete(name)
         self._refresh_preset_popup()
         self._refresh_hotkey_indicators()
-        invalidate_settings_window()
+        invalidate_settings_window(self)
         self._save_session()
         self.set_status(f"Deleted preset: {name}")
         print(f"[preset] Deleted '{name}'")
@@ -1578,7 +1712,7 @@ class AppController(NSObject):
                     self._restore_session()
                     self._refresh_preset_popup()
                     self._refresh_hotkey_indicators()
-                    invalidate_settings_window()
+                    invalidate_settings_window(self)
                     self.set_status(f"Settings imported from {source}")
                     print(f"[import] Settings imported from {source}")
                 except Exception as e:
@@ -1652,11 +1786,12 @@ class AppController(NSObject):
         """Update the LCD display to show the route for the given output."""
         self._lcd_selected_out = out_idx
         self._lcd_idle = False
-        if out_idx >= len(self.hub.routing):
-            return
-        in_idx = self.hub.routing[out_idx]
-        out_name = self.hub.output_labels[out_idx] if out_idx < len(self.hub.output_labels) else f"Output {out_idx + 1}"
-        in_name = self.hub.input_labels[in_idx] if in_idx < len(self.hub.input_labels) else f"Input {in_idx + 1}"
+        with self.hub.lock:
+            if out_idx >= len(self.hub.routing):
+                return
+            in_idx = self.hub.routing[out_idx]
+            out_name = self.hub.output_labels[out_idx] if out_idx < len(self.hub.output_labels) else f"Output {out_idx + 1}"
+            in_name = self.hub.input_labels[in_idx] if in_idx < len(self.hub.input_labels) else f"Input {in_idx + 1}"
         self.lcd_src_header.setStringValue_(f"{in_idx + 1:02d} | SRC")
         self.lcd_src_name.setStringValue_(in_name)
         self.lcd_src_name.setAlignment_(NSLeftTextAlignment)
@@ -1852,7 +1987,7 @@ class AppController(NSObject):
 
         # Update minimum window height
         min_h = header_h + CONN_BAR_H + 300 + BOTTOM_BAR_H
-        self.window.setMinSize_((900, min_h))
+        self.window.setMinSize_((920, min_h))
 
         # Grow the window if it's now smaller than the minimum
         win_frame = self.window.frame()
@@ -1933,10 +2068,14 @@ class AppController(NSObject):
         if selected.startswith("\u2014"):
             selected = ""
         print(f"[session] Saving {self._num_inputs}x{self._num_outputs} state (preset='{selected}')")
+        with self.hub.lock:
+            routing = list(self.hub.routing)
+            in_labels = list(self.hub.input_labels)
+            out_labels = list(self.hub.output_labels)
         self.presets.save_session(
-            routing=self.hub.routing,
-            input_labels=self.hub.input_labels,
-            output_labels=self.hub.output_labels,
+            routing=routing,
+            input_labels=in_labels,
+            output_labels=out_labels,
             selected_preset=selected,
             lcd_output=self._lcd_selected_out,
             active_hotkey=self._active_hotkey,
@@ -1968,19 +2107,18 @@ class AppController(NSObject):
             print("[session] No saved session for this model")
             return
 
-        # Restore routing
-        routing = session.get("routing", [])
-        for i, in_idx in enumerate(routing):
-            if i < self._num_outputs and 0 <= in_idx < self._num_inputs:
-                self.hub.routing[i] = in_idx
-
-        # Restore labels
-        for i, lbl in enumerate(session.get("input_labels", [])):
-            if i < self.hub.num_inputs:
-                self.hub.input_labels[i] = lbl
-        for i, lbl in enumerate(session.get("output_labels", [])):
-            if i < self.hub.num_outputs:
-                self.hub.output_labels[i] = lbl
+        # Restore routing and labels under lock (recv loop may be active)
+        with self.hub.lock:
+            routing = session.get("routing", [])
+            for i, in_idx in enumerate(routing):
+                if i < self._num_outputs and 0 <= in_idx < self._num_inputs:
+                    self.hub.routing[i] = in_idx
+            for i, lbl in enumerate(session.get("input_labels", [])):
+                if i < self.hub.num_inputs:
+                    self.hub.input_labels[i] = lbl
+            for i, lbl in enumerate(session.get("output_labels", [])):
+                if i < self.hub.num_outputs:
+                    self.hub.output_labels[i] = lbl
 
         self.refresh_labels()
         self.refresh_matrix()
@@ -2120,9 +2258,10 @@ class AppController(NSObject):
         routing = preset.get("routing", [])
 
         # Update routing only — preserve current labels
-        for out_idx, in_idx in enumerate(routing):
-            if out_idx < self._num_outputs and 0 <= in_idx < self._num_inputs:
-                self.hub.routing[out_idx] = in_idx
+        with self.hub.lock:
+            for out_idx, in_idx in enumerate(routing):
+                if out_idx < self._num_outputs and 0 <= in_idx < self._num_inputs:
+                    self.hub.routing[out_idx] = in_idx
         self.refresh_matrix()
 
         # Sync the preset dropdown to show the recalled preset
@@ -2182,12 +2321,34 @@ class AppController(NSObject):
                 trusted = True  # assume trusted if we can't check
 
             if not trusted:
-                subprocess.Popen([
-                    "open",
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-                ])
-                print("[hotkeys] Opened Accessibility settings — add this app and toggle ON")
-                self.set_status("Grant Accessibility permission, then re-enable Global Hotkeys")
+                from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_("Accessibility Permission Required")
+                alert.setInformativeText_(
+                    "Global Hotkeys need Accessibility permission to capture "
+                    "keyboard shortcuts when the app is in the background.\n\n"
+                    "Click Open Settings, then toggle Videohub Controller ON "
+                    "in the Accessibility list."
+                )
+                alert.addButtonWithTitle_("Open Settings")
+                alert.addButtonWithTitle_("Not Now")
+                dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+                if dark:
+                    alert.window().setAppearance_(dark)
+                result = alert.runModal()
+                if result == NSAlertFirstButtonReturn:
+                    subprocess.Popen([
+                        "open",
+                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                    ])
+                    print("[hotkeys] User accepted — opened Accessibility settings")
+                    self.set_status("Toggle Videohub Controller ON in Accessibility, then re-enable Global Hotkeys")
+                else:
+                    print("[hotkeys] User declined Accessibility prompt")
+                    self.presets.settings["global_hotkeys"] = False
+                    self.presets._write()
+                    self.set_status("Global Hotkeys disabled — enable in Settings when ready")
+                    return
 
             def global_handler(event):
                 try:
@@ -2239,20 +2400,342 @@ class AppController(NSObject):
         self.performSelector_withObject_afterDelay_(
             objc.selector(self.resignFocus_, signature=b"v@:@"), None, 0.1
         )
-        # Auto-connect if we have a saved IP
+        # Auto-discover and connect on launch
+        if not self.hub.connected:
+            from PyObjCTools import AppHelper
+            AppHelper.callLater(0.5, self._autoDiscover)
+
+    @objc.python_method
+    def _autoDiscover(self):
+        """Auto-discover on launch: try Bonjour first, fall back to saved IP."""
+        if self.hub.connected:
+            return
         ip = self.ip_field.stringValue().strip()
-        if ip and not self.hub.connected:
-            self.performSelector_withObject_afterDelay_(
-                objc.selector(self._autoConnect_, signature=b"v@:@"), None, 0.5
+        print(f"[app] Auto-discover on launch (saved IP: '{ip}')...")
+        self.set_status("Discovering Videohubs on the network...")
+        self._discover_cancel = threading.Event()
+        threading.Thread(target=self._do_auto_discover, args=(ip,), daemon=True).start()
+
+    @objc.python_method
+    def _do_auto_discover(self, fallback_ip):
+        """Background: Bonjour browse, then fall back to saved IP."""
+        from videohub_controller.connection import discover_videohubs
+        devices = discover_videohubs(timeout=5.0, cancel_event=self._discover_cancel)
+        if devices:
+            dev = devices[0]
+            ip = dev["host"]
+            name = dev["name"]
+            print(f"[app] Auto-discovered: {name} at {ip}")
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self._autoConnectTo_, ip, name)
+        elif fallback_ip:
+            print(f"[app] No Bonjour response — falling back to saved IP: {fallback_ip}")
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self._autoConnectTo_, fallback_ip, None)
+        else:
+            print("[app] No devices found and no saved IP")
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self.set_status, "No Videohubs found. Click Discover or enter IP.")
+        self._discover_cancel = None
+
+    @objc.python_method
+    def _autoConnectTo_(self, ip, name=None):
+        """Main thread: update UI and connect to discovered/saved IP."""
+        self.ip_field.setStringValue_(ip)
+        if name:
+            self.set_status(f"Found: {name} — connecting...")
+        else:
+            self.set_status(f"Auto-connecting to {ip}...")
+        self.connect_btn.setEnabled_(False)
+        threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+
+
+    # -- Multi-device support --
+
+    @objc.python_method
+    def _refresh_device_popup(self):
+        """Rebuild the device picker dropdown from known + discovered devices."""
+        self.device_popup.removeAllItems()
+
+        # Merge known devices with discovered devices, deduplicate by unique_id and IP
+        all_devices = {}
+        known_ips = set()
+        for uid, dev in self.presets.get_known_devices().items():
+            if uid == "legacy":
+                continue
+            all_devices[uid] = dev
+            ip = dev.get("ip", "")
+            if ip:
+                known_ips.add(ip)
+        for dev in self._discovered_devices:
+            uid = dev.get("unique_id", "")
+            ip = dev.get("host", "")
+            # Skip if already known by unique_id or IP
+            if uid and uid in all_devices:
+                continue
+            if ip and ip in known_ips:
+                continue
+            key = uid or ip
+            if key:
+                all_devices[key] = {
+                    "friendly_name": dev.get("friendly_name", ""),
+                    "model_name": dev.get("name", dev.get("model_name", "Videohub")),
+                    "ip": ip,
+                    "unique_id": uid,
+                }
+
+        self._device_popup_ids = []
+        self._device_short_names = []
+
+        # Add placeholder only if no devices or multiple devices
+        if len(all_devices) != 1:
+            self.device_popup.addItemWithTitle_("\u2014 Select Device \u2014")
+            self._device_popup_ids.append(None)
+            self._device_short_names.append("\u2014 Select Device \u2014")
+
+        for uid, dev in all_devices.items():
+            fname = dev.get("friendly_name", "")
+            model = dev.get("model_name", "Videohub")
+            ip = dev.get("ip", "")
+            # Short name for selected display (no IP)
+            if fname and fname != model:
+                short = fname
+            else:
+                short = model
+            # Menu item shows "Model  (IP)" — IP in dimmer text
+            if ip:
+                menu_title = f"{short}  ({ip})"
+            else:
+                menu_title = short
+            self.device_popup.addItemWithTitle_(menu_title)
+            item = self.device_popup.lastItem()
+            if item and ip:
+                # Style the IP portion dimmer
+                from AppKit import NSMutableAttributedString, NSFontAttributeName, NSForegroundColorAttributeName
+                font = NSFont.systemFontOfSize_(13)
+                dim_font = NSFont.systemFontOfSize_(11)
+                astr = NSMutableAttributedString.alloc().initWithString_attributes_(
+                    menu_title, {NSFontAttributeName: font}
+                )
+                ip_start = len(short) + 2  # after "  "
+                ip_len = len(menu_title) - ip_start
+                astr.addAttribute_value_range_(NSForegroundColorAttributeName, TEXT_DIM, (ip_start, ip_len))
+                astr.addAttribute_value_range_(NSFontAttributeName, dim_font, (ip_start, ip_len))
+                item.setAttributedTitle_(astr)
+            self._device_popup_ids.append(uid)
+            self._device_short_names.append(short)
+
+        # Pre-select current device and show short name on button
+        if self._current_device_id and self._current_device_id in self._device_popup_ids:
+            idx = self._device_popup_ids.index(self._current_device_id)
+            self.device_popup.selectItemAtIndex_(idx)
+            self.device_popup.setTitle_(self._device_short_names[idx])
+        elif self.device_popup.numberOfItems() == 0 or not self._current_device_id:
+            # No matching device — show "None"
+            if self.device_popup.numberOfItems() == 0:
+                self.device_popup.addItemWithTitle_("None")
+                self._device_popup_ids.append(None)
+                self._device_short_names.append("None")
+            self.device_popup.setTitle_("None")
+
+        # Auto-size width to fit the selected title
+        self._resize_device_popup()
+
+    @objc.python_method
+    def _resize_device_popup(self):
+        """Resize device popup width to fit the current title."""
+        idx = self.device_popup.indexOfSelectedItem()
+        if 0 <= idx < len(self._device_short_names):
+            title = self._device_short_names[idx]
+        else:
+            title = self.device_popup.titleOfSelectedItem() or ""
+        from AppKit import NSAttributedString, NSFontAttributeName
+        font = self.device_popup.font() or NSFont.systemFontOfSize_(13)
+        attrs = {NSFontAttributeName: font}
+        text_w = NSAttributedString.alloc().initWithString_attributes_(title, attrs).size().width
+        new_w = max(int(text_w) + 45, 120)  # padding for dropdown arrow + bezel
+        f = self.device_popup.frame()
+        right_edge = f.origin.x + f.size.width
+        f.origin.x = right_edge - new_w
+        f.size.width = new_w
+        self.device_popup.setFrame_(f)
+
+    def renameDeviceFromMenu_(self, sender):
+        """Rename the selected device (triggered from right-click context menu)."""
+        idx = self.device_popup.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self._device_popup_ids):
+            return
+        uid = self._device_popup_ids[idx]
+        if uid is None:
+            return
+        old_name = self._device_short_names[idx] if idx < len(self._device_short_names) else ""
+
+        from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Rename Device")
+        alert.setInformativeText_(f'Enter a custom name for "{old_name}":')
+        alert.addButtonWithTitle_("Rename")
+        alert.addButtonWithTitle_("Cancel")
+        name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 250, 24))
+        name_field.setStringValue_(old_name)
+        alert.setAccessoryView_(name_field)
+        dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+        if dark:
+            alert.window().setAppearance_(dark)
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        new_name = name_field.stringValue().strip()
+        if not new_name or new_name == old_name:
+            return
+
+        # Update the device entry in config
+        dev = self.presets.devices.get(uid)
+        if dev:
+            dev["friendly_name"] = new_name
+            self.presets._write()
+            print(f"[device] Renamed '{old_name}' -> '{new_name}' (id={uid})")
+        self._refresh_device_popup()
+        self.set_status(f'Device renamed: "{new_name}"')
+
+    def deviceSelected_(self, sender):
+        """Handle device picker dropdown selection."""
+        idx = sender.indexOfSelectedItem()
+        # Show short name (no IP) on the button face
+        if 0 <= idx < len(self._device_short_names):
+            sender.setTitle_(self._device_short_names[idx])
+        self._resize_device_popup()
+        if idx < 0 or idx >= len(self._device_popup_ids):
+            return
+        uid = self._device_popup_ids[idx]
+        if uid is None:
+            return  # placeholder selected
+        if uid == self._current_device_id and self.hub.connected:
+            return  # already connected to this device
+
+        dev = self.presets.get_known_devices().get(uid)
+        if dev:
+            ip = dev.get("ip", "")
+        else:
+            # From discovered devices
+            for d in self._discovered_devices:
+                if d.get("unique_id") == uid or d.get("host") == uid:
+                    ip = d.get("host", "")
+                    break
+            else:
+                return
+
+        if not ip:
+            self.set_status("No IP address for this device")
+            return
+
+        print(f"[device] Switching to device {uid} at {ip}")
+        self._switch_device(uid, ip)
+
+    @objc.python_method
+    def _switch_device(self, unique_id, ip):
+        """Save current device state, disconnect, load new device state, connect."""
+        # Save current device
+        if self._current_device_id and self.hub.connected:
+            self._save_session()
+            self.presets.save_device_state(
+                self._current_device_id,
+                friendly_name=self.hub.friendly_name,
+                model_name=self.hub.model_name,
+                ip=self.ip_field.stringValue().strip(),
+                num_inputs=self._num_inputs,
+                num_outputs=self._num_outputs,
             )
 
-    def _autoConnect_(self, _):
-        ip = self.ip_field.stringValue().strip()
-        if ip and not self.hub.connected:
-            print(f"[app] Auto-connecting to {ip}...")
-            self.set_status(f"Auto-connecting to {ip}...")
-            self.connect_btn.setEnabled_(False)
-            threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+        # Disconnect
+        if self.hub.connected:
+            self.hub.disconnect()
+
+        # Load new device state
+        self._current_device_id = unique_id
+        self._device_identified = False
+        loaded = self.presets.load_device_state(unique_id)
+
+        if loaded:
+            # Restore model/IO from device config
+            from videohub_controller.connection import VIDEOHUB_MODELS
+            saved_model = self.presets.settings.get("device_model", "Auto-Detect")
+            num_in, num_out = VIDEOHUB_MODELS.get(saved_model, (10, 10))
+            dev = self.presets.devices.get(unique_id, {})
+            num_in = dev.get("num_inputs", num_in)
+            num_out = dev.get("num_outputs", num_out)
+            self.hub.num_inputs = num_in
+            self.hub.num_outputs = num_out
+            self.hub.input_labels = [f"Input {i+1}" for i in range(num_in)]
+            self.hub.output_labels = [f"Output {i+1}" for i in range(num_out)]
+            self.hub.routing = [0] * num_out
+            self._rebuild_io(num_in, num_out)
+            invalidate_settings_window(self)
+
+        # Connect to new device
+        self.ip_field.setStringValue_(ip)
+        self.set_status(f"Connecting to {ip}...")
+        self.connect_btn.setEnabled_(False)
+        threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
+
+    @objc.python_method
+    def _on_device_identified(self, unique_id):
+        """Called once per connection when VIDEOHUB DEVICE block provides unique_id."""
+        if self._device_identified:
+            return
+        self._device_identified = True
+
+        old_id = self._current_device_id
+        self._current_device_id = unique_id
+
+        # If this is the legacy entry, migrate it
+        if old_id == "legacy" and "legacy" in self.presets.devices:
+            self.presets.save_device_state(
+                unique_id,
+                friendly_name=self.hub.friendly_name,
+                model_name=self.hub.model_name,
+                ip=self.ip_field.stringValue().strip(),
+                num_inputs=self.hub.num_inputs,
+                num_outputs=self.hub.num_outputs,
+            )
+        elif old_id != unique_id:
+            # Connected to a different device than expected — save old, load new
+            if old_id:
+                self.presets.save_device_state(
+                    old_id,
+                    friendly_name="",
+                    model_name=self.presets.settings.get("device_model", ""),
+                    ip="",
+                    num_inputs=self._num_inputs,
+                    num_outputs=self._num_outputs,
+                )
+            loaded = self.presets.load_device_state(unique_id)
+            if loaded:
+                self._restore_session()
+        else:
+            # Same device as expected — just update metadata
+            pass
+
+        # Always update device metadata and sync device_model setting
+        self.presets.save_device_state(
+            unique_id,
+            friendly_name=self.hub.friendly_name,
+            model_name=self.hub.model_name,
+            ip=self.ip_field.stringValue().strip(),
+            num_inputs=self.hub.num_inputs,
+            num_outputs=self.hub.num_outputs,
+        )
+        # Ensure device_model setting matches the connected hardware
+        from videohub_controller.connection import VIDEOHUB_MODELS
+        for model_key, (m_in, m_out) in VIDEOHUB_MODELS.items():
+            if model_key == "Auto-Detect":
+                continue
+            if m_in == self.hub.num_inputs and m_out == self.hub.num_outputs:
+                self.presets.settings["device_model"] = model_key
+                break
+        self.presets.set_last_device_id(unique_id)
+        self._refresh_device_popup()
+        invalidate_settings_window(self)
+        print(f"[device] Identified: {self.hub.model_name} ({self.hub.friendly_name}) id={unique_id}")
 
 
 class AppDelegate(NSObject):

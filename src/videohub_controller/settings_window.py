@@ -77,12 +77,17 @@ def refresh_hotkey_popups(controller):
             popup.selectItemAtIndex_(0)
 
 
-def invalidate_settings_window():
+def invalidate_settings_window(controller=None):
     """Close and reset the settings window so it rebuilds with fresh preset lists."""
     global _settings_window
     if _settings_window is not None:
         _settings_window.close()
         _settings_window = None
+    # Clear delegate references to prevent leaks
+    if controller:
+        controller._settings_delegates = []
+        controller._settings_font_sliders = {}
+        controller._settings_hotkey_popups = []
 
 
 class SliderDelegate(NSObject):
@@ -157,6 +162,82 @@ KEY_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 NONE_LABEL = "\u2014 None \u2014"
 
 
+class DeviceNameDelegate(NSObject):
+    """Handles device name field and device picker in Settings."""
+
+    controller = objc.ivar("controller")
+    name_field = objc.ivar("name_field")
+    device_popup = objc.ivar("device_popup")
+    device_uids = objc.ivar("device_uids")
+
+    @objc.python_method
+    def initWithController_(self, ctrl):
+        self = self.init()
+        if self:
+            self.controller = ctrl
+            self.device_uids = []
+        return self
+
+    def devicePickerChanged_(self, sender):
+        """When user picks a device in settings, update the custom name field."""
+        idx = sender.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self.device_uids):
+            return
+        uid = self.device_uids[idx]
+        dev = self.controller.presets.devices.get(uid, {})
+        custom = dev.get("friendly_name", "")
+        model = dev.get("model_name", "")
+        if custom and custom != model:
+            self.name_field.setStringValue_(custom)
+        else:
+            self.name_field.setStringValue_("")
+        self.name_field.setPlaceholderString_(model or "e.g. Edit Suite A")
+
+    def controlTextDidEndEditing_(self, notification):
+        """When user finishes editing the custom name field."""
+        tf = notification.object()
+        new_name = tf.stringValue().strip()
+        # Get the selected device from the settings device picker
+        idx = self.device_popup.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self.device_uids):
+            return
+        uid = self.device_uids[idx]
+        if uid and uid in self.controller.presets.devices:
+            self.controller.presets.devices[uid]["friendly_name"] = new_name
+            self.controller.presets._write()
+            self.controller._refresh_device_popup()
+            # Refresh the settings device picker too
+            self._refresh_settings_picker()
+            print(f"[settings] Device custom name: '{new_name}' (id={uid})")
+
+    @objc.python_method
+    def _refresh_settings_picker(self):
+        """Rebuild the settings device picker to reflect name changes."""
+        if not self.device_popup:
+            return
+        selected_idx = self.device_popup.indexOfSelectedItem()
+        self.device_popup.removeAllItems()
+        self.device_uids = []
+        devices = self.controller.presets.get_known_devices()
+        for uid, dev in devices.items():
+            if uid == "legacy":
+                continue
+            model = dev.get("model_name", "Videohub")
+            ip = dev.get("ip", "")
+            custom = dev.get("friendly_name", "")
+            # Format: "Model — IP" or "Model — IP — Custom Name"
+            parts = [model]
+            if ip:
+                parts.append(ip)
+            if custom and custom != model:
+                parts.append(f'"{custom}"')
+            label = "  —  ".join(parts)
+            self.device_popup.addItemWithTitle_(label)
+            self.device_uids.append(uid)
+        if 0 <= selected_idx < self.device_popup.numberOfItems():
+            self.device_popup.selectItemAtIndex_(selected_idx)
+
+
 class ModelSelectDelegate(NSObject):
     """Handles device model popup changes."""
 
@@ -177,7 +258,11 @@ class ModelSelectDelegate(NSObject):
         print(f"[settings] Device model changed: {model_key} ({num_in}x{num_out})")
         self.controller.presets.settings["device_model"] = model_key
         self.controller.presets._write()
-        if model_key != "Auto-Detect" and not self.controller.hub.connected:
+        if model_key != "Auto-Detect":
+            # Disconnect if connected (switching models while live)
+            if self.controller.hub.connected:
+                print(f"[settings] Disconnecting to switch model to {model_key}")
+                self.controller.hub.disconnect()
             # Save current model's state BEFORE resetting hub arrays
             self.controller._save_session()
             self.controller.hub.num_inputs = num_in
@@ -186,7 +271,21 @@ class ModelSelectDelegate(NSObject):
             self.controller.hub.output_labels = [f"Output {i+1}" for i in range(num_out)]
             self.controller.hub.routing = [0] * num_out
             self.controller._rebuild_io(num_in, num_out)
-            self.controller.set_status(f"Set to {model_key} ({num_in}x{num_out})")
+            # Find a known device matching this model and select it
+            matching_uid = None
+            for uid, dev in self.controller.presets.get_known_devices().items():
+                if uid == "legacy":
+                    continue
+                if dev.get("num_inputs") == num_in and dev.get("num_outputs") == num_out:
+                    matching_uid = uid
+                    break
+            self.controller._current_device_id = matching_uid
+            self.controller._device_identified = False
+            self.controller._refresh_device_popup()
+            if matching_uid:
+                self.controller.set_status(f"Set to {model_key} ({num_in}x{num_out})")
+            else:
+                self.controller.set_status(f"Set to {model_key} — no device connected")
         # Refresh hotkey popups and font sliders for the new model
         refresh_hotkey_popups(self.controller)
         refresh_font_sliders(self.controller)
@@ -298,6 +397,78 @@ def show_settings_window(controller):
     delegates.append(model_del)
     cv.addSubview_(model_popup)
 
+    # -- Device Names section --
+    y -= 40
+    cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Device Names", size=14, bold=True))
+
+    y -= 28
+    # Device picker dropdown showing all known devices
+    settings_device_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+        NSMakeRect(20, y, 360, 24), False
+    )
+    settings_device_popup.removeAllItems()
+
+    name_del = DeviceNameDelegate.alloc().initWithController_(controller)
+    name_del.device_popup = settings_device_popup
+    name_del.device_uids = []
+
+    devices = controller.presets.get_known_devices()
+    current_uid = controller._current_device_id or ""
+    select_idx = 0
+    for uid, dev in devices.items():
+        if uid == "legacy":
+            continue
+        model = dev.get("model_name", "Videohub")
+        ip = dev.get("ip", "")
+        custom = dev.get("friendly_name", "")
+        parts = [model]
+        if ip:
+            parts.append(ip)
+        if custom and custom != model:
+            parts.append(f'"{custom}"')
+        label = "  \u2014  ".join(parts)
+        settings_device_popup.addItemWithTitle_(label)
+        if uid == current_uid:
+            select_idx = settings_device_popup.numberOfItems() - 1
+        name_del.device_uids.append(uid)
+
+    if settings_device_popup.numberOfItems() > 0:
+        settings_device_popup.selectItemAtIndex_(select_idx)
+
+    settings_device_popup.setTarget_(name_del)
+    settings_device_popup.setAction_(objc.selector(name_del.devicePickerChanged_, signature=b"v@:@"))
+    delegates.append(name_del)
+    cv.addSubview_(settings_device_popup)
+
+    # Custom Name field
+    y -= 28
+    cv.addSubview_(_make_label(NSMakeRect(20, y, 100, 20), "Custom Name:", size=12, color=TEXT_WHITE))
+    device_name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(120, y, 260, 22))
+    # Get selected device's custom name
+    if name_del.device_uids:
+        sel_uid = name_del.device_uids[select_idx] if select_idx < len(name_del.device_uids) else ""
+        dev_data = devices.get(sel_uid, {})
+        current_custom = dev_data.get("friendly_name", "")
+        dev_model = dev_data.get("model_name", "")
+        if current_custom and current_custom != dev_model:
+            device_name_field.setStringValue_(current_custom)
+        else:
+            device_name_field.setStringValue_("")
+        device_name_field.setPlaceholderString_(dev_model or "e.g. Edit Suite A")
+    else:
+        device_name_field.setPlaceholderString_("No devices found")
+    device_name_field.setFont_(NSFont.systemFontOfSize_(12))
+    device_name_field.setBezeled_(True)
+    device_name_field.setDrawsBackground_(True)
+    device_name_field.setBackgroundColor_(
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.14, 0.14, 0.14, 1.0))
+    device_name_field.setTextColor_(NSColor.whiteColor())
+    device_name_field.setEditable_(True)
+    device_name_field.setFocusRingType_(1)
+    device_name_field.setDelegate_(name_del)
+    name_del.name_field = device_name_field
+    cv.addSubview_(device_name_field)
+
     y -= 40
     cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Font Sizes", size=14, bold=True))
 
@@ -389,7 +560,9 @@ def show_settings_window(controller):
     ))
 
     bindings = controller.presets.get_key_bindings()
-    preset_names = controller.presets.names()
+    preset_names = controller.presets.names(
+        num_inputs=controller._num_inputs, num_outputs=controller._num_outputs
+    )
 
     hotkey_popups = []
     for i, key_label in enumerate(KEY_LABELS):
@@ -507,6 +680,21 @@ def show_settings_window(controller):
 
     # prevent GC — store on controller (can't set attrs on NSWindow in bundled app)
     controller._settings_delegates = delegates
+
+    # Resize window to remove excess space at bottom
+    # y is the bottom of the lowest element; shift everything down so y lands at bottom_margin
+    bottom_margin = 20
+    excess = y - bottom_margin
+    if excess > 10:
+        for subview in cv.subviews():
+            f = subview.frame()
+            f.origin.y -= excess
+            subview.setFrame_(f)
+        # Shrink window from the bottom (keep top edge fixed)
+        frame = win.frame()
+        frame.origin.y += excess
+        frame.size.height -= excess
+        win.setFrame_display_(frame, False)
 
     _settings_window = win
     # ESC closes the window

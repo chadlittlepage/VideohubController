@@ -31,7 +31,7 @@ _RETAINED = []  # singleton — only keep the latest window
 
 
 MANUAL_TEXT = """\
-Videohub Controller v0.4.0 - User Manual
+Videohub Controller v0.5.0 - User Manual
 ==========================================
 
 OVERVIEW
@@ -39,16 +39,69 @@ Videohub Controller is a native macOS application for controlling
 Blackmagic Videohub SDI routers over Ethernet. It supports ALL
 Videohub models from Mini 4x2 to 80x80 with dynamic I/O sizing,
 a crosspoint matrix GUI, editable labels, routing presets with
-hotkey recall, Bonjour device discovery, and a hardware-style
-LCD display.
+hotkey recall, Bonjour device discovery, multi-device management,
+and a hardware-style LCD display.
 
 
 GETTING STARTED
 1. Launch Videohub Controller.
-2. Click Discover to find Videohubs on your network automatically,
-   or enter the IP address manually.
-3. The app auto-connects on launch if a saved IP exists.
-4. The matrix and labels populate from the hardware's current state.
+2. The app automatically discovers Videohubs on your network
+   via Bonjour and connects to the first one found.
+3. If multiple devices are found, select one from the Device
+   dropdown in the toolbar.
+4. The matrix and labels populate from the hardware's current
+   state. No manual IP entry needed.
+
+For manual connection:
+  Enter an IP address in the IP field and click Connect.
+
+
+AUTO-DISCOVERY
+On launch, the app automatically browses for Videohubs using
+Bonjour/mDNS (_videohub._tcp). If a single device is found,
+it connects automatically. If multiple devices are found, the
+Device dropdown populates and the last-used device is selected.
+
+The Discover button performs a deeper search:
+  1. Bonjour browse (finds all advertising devices)
+  2. Port 9990 scan on local subnets (finds non-Bonjour devices)
+  3. Falls back to the IP in the field if nothing else works
+
+  - Click Discover again (shows "Cancel") or press Escape
+    to stop a discovery in progress
+  - If already connected, Discover reports the current device
+
+Discovery also triggers the macOS Local Network permission
+prompt, which helps avoid connection issues on macOS 15+.
+
+
+MULTI-DEVICE MANAGEMENT
+The Device dropdown in the toolbar shows all known Videohubs.
+Each device is identified by its hardware Unique ID, so two
+identical models (e.g., two Mini 8x4s) are tracked separately.
+
+Selecting a device:
+  Click the Device dropdown to switch between Videohubs.
+  Switching saves the current device's state, disconnects,
+  loads the new device's state, and connects.
+
+Custom device names:
+  Right-click (or Control-click) the Device dropdown and
+  select "Rename..." to give a device a custom name like
+  "Edit Suite A" or "Color Bay". The custom name appears
+  in the dropdown instead of the model name.
+
+  You can also rename devices in Settings under the
+  "Device Names" section: select a device from the dropdown
+  and type a Custom Name.
+
+Per-device storage:
+  Each device saves its own presets, hotkey bindings, labels,
+  font sizes, and session state independently. Switching
+  between devices restores each one exactly as you left it.
+
+  If the Device dropdown shows "None", no known device matches
+  the currently selected model.
 
 
 DEVICE MODEL SELECTION
@@ -65,25 +118,13 @@ Device Model dropdown:
   Videohub 40x40       40 inputs, 40 outputs
   Videohub 80x80       80 inputs, 80 outputs
 
+The model is auto-detected from the hardware on connect. If you
+change the model manually while connected, the app disconnects,
+rebuilds the GUI for the new model, and updates the Device
+dropdown to show a matching device (or "None" if no match).
+
 The entire GUI rebuilds dynamically when you change models:
 matrix grid, labels panel, headers, and crosshairs all resize.
-The model selection persists across restarts.
-
-
-BONJOUR DISCOVERY
-Click Discover to find Videohubs on your local network via
-Bonjour/mDNS (_videohub._tcp). The first device found is
-auto-filled into the IP field and connected.
-
-  - Click Discover again (shows "Cancel") or press Escape
-    to stop a discovery in progress
-  - Discovery also triggers the macOS Local Network permission
-    prompt, which helps avoid connection issues on macOS 15
-
-
-AUTO-CONNECT
-If you've connected before, the app automatically connects on
-launch using the saved IP address. No clicks needed.
 
 
 LCD DISPLAY
@@ -135,8 +176,8 @@ To rename:
   2. Press Return/Enter to confirm, or Tab to the next field.
   3. The LCD display updates immediately.
 
-Labels persist across restarts and are sent to the Videohub
-when connected. Copy/paste supported (Cmd+C/V).
+Labels persist per-device across restarts and are sent to the
+Videohub when connected. Copy/paste supported (Cmd+C/V).
 
 
 PRESETS (SALVOS)
@@ -151,9 +192,9 @@ Save and recall complete routing snapshots.
           then click "Rename..." to change the preset name.
           The hotkey binding and dropdown position are preserved.
 
-Presets are model-specific: only presets saved for the current
-I/O size appear in the dropdown. Switch to a different model
-and you see only that model's presets.
+Presets are per-device: each Videohub has its own set of presets.
+Switch to a different device and you see only that device's
+presets.
 
 The dropdown shows hotkey assignments: [1] Studio A
 
@@ -183,15 +224,21 @@ The Settings window floats above the main window.
 
 Device Model:
   Select your Videohub model. GUI rebuilds dynamically.
-  Hotkey preset dropdowns update to show only presets for
-  the selected model.
+  The model is auto-detected from hardware on connect.
+  Changing the model while connected disconnects first.
+
+Device Names:
+  Lists all known Videohubs (discovered or previously connected).
+  Select a device and type a Custom Name to identify it.
+  Custom names appear in the toolbar Device dropdown.
+  Each entry shows: Model, IP, and Custom Name (if set).
 
 Font Sizes:
   Display Font Size       Scales LCD display and title bar
   Input/Output Labels     Scales label text in left panel
   Grid IN/OUT Headers     Scales grid header font and cell size
 
-  Font sizes are saved per-model. Each device model remembers
+  Font sizes are saved per-device. Each Videohub remembers
   its own font preferences independently.
 
 Window & Hotkey Behavior:
@@ -201,16 +248,18 @@ Window & Hotkey Behavior:
                           permission: System Settings > Privacy
                           & Security > Accessibility)
 
+  When Global Hotkeys is first enabled, the app shows a dialog
+  explaining the Accessibility permission requirement and offers
+  to open System Settings for you.
+
 Hotkey Presets:
   Assign presets to keys 1-0. Only presets for the current
-  device model appear in the dropdowns.
+  device appear in the dropdowns.
 
 Reset This Device Model:
   Erases ALL Labels, Presets, and Hotkey Bindings for the
   currently selected model ONLY. Other device models are
   not affected. Resets font sizes to defaults.
-
-All settings persist per-model across restarts.
 
 
 EXPORT / IMPORT SETTINGS
@@ -218,19 +267,23 @@ File menu:
   Export Settings (Shift+Cmd+E)  Save all config as JSON
   Import Settings (Shift+Cmd+I)  Load config from JSON
 
-Exports include: IP address, all presets, hotkey bindings,
-font sizes, session state, device model. Use this to transfer
-settings between machines or back up your configuration.
+Exports include: all device configs, presets, hotkey bindings,
+font sizes, session state, device model, and custom device names.
+Use this to transfer settings between machines or back up your
+configuration.
 
 
 SESSION PERSISTENCE
-Everything saves per-model on quit and restores on relaunch:
+Everything saves per-device on quit and restores on relaunch:
   IP address, labels, routing grid, selected preset, active
-  hotkey, LCD state, font sizes, hotkey bindings, device model
+  hotkey, LCD state, font sizes, hotkey bindings, device model,
+  custom device name, window size and position
 
-Each device model has its own independent session. Switching
-from 10x10 to 20x20 saves the 10x10 state and loads the 20x20
-state. Switching back restores exactly where you left off.
+Each device has its own independent session. Switching devices
+saves the current state and loads the new device's state.
+Switching back restores exactly where you left off.
+
+The window size and position are remembered across restarts.
 
 Config stored at:
   /Users/Shared/Videohub Controller/videohub_controller.json
@@ -241,11 +294,27 @@ CONNECTION STATUS
   Red dot + "Disconnected"  = not connected
   Green dot + "Connected"   = active TCP connection
 
+The status bar at bottom shows the connected model name and IP.
+
 The connection is bidirectional: your changes go to the hardware
 instantly, and hardware changes are reflected in the GUI.
 
 The app auto-retries (3 attempts, 1-second delays) on connection
 failure.
+
+
+CONSOLE LOGGING
+Every significant action is logged with timestamps to a log file
+for remote debugging:
+  - Connection events, discovery, device identification
+  - Route changes, label renames
+  - Preset save/recall/delete/rename
+  - Settings changes, model switches
+  - Session save/restore
+  - Export/import operations
+  - Errors and exceptions
+
+Export the log via Help > Export Console Log for troubleshooting.
 
 
 MENU BAR
@@ -277,9 +346,9 @@ KEYBOARD SHORTCUTS
   Shift+Cmd+I      Import Settings
   Cmd+C/V/X/A      Copy, paste, cut, select all
   1-9, 0           Recall hotkey preset
-  Return/Enter     Confirm label rename
+  Return/Enter     Confirm label rename / confirm device name
   Tab              Next label field
-  Right-click      Rename selected preset (on preset dropdown)
+  Right-click      Rename (on preset or device dropdown)
   Control-click    Same as right-click
 
 
@@ -308,7 +377,8 @@ simultaneously.
 TROUBLESHOOTING
 
 Can't connect
-  - Click Discover to find devices via Bonjour
+  - The app auto-discovers via Bonjour on launch
+  - Click Discover for a deeper search (port scan fallback)
   - Verify the Videohub is powered on and on the network
   - Try pinging the IP from Terminal
   - The app retries 3 times automatically
@@ -323,6 +393,17 @@ Hotkeys not working
   - For Global Hotkeys: grant Accessibility permission in
     System Settings > Privacy & Security > Accessibility
 
+Multiple devices on the network
+  - All discovered devices appear in the Device dropdown
+  - The last-used device is auto-selected on launch
+  - Switch devices from the dropdown at any time
+
+Device shows wrong name/presets
+  - Each device is identified by its hardware Unique ID
+  - If a device was replaced with new hardware, it will
+    appear as a new device. Use Settings > Device Names
+    to rename it.
+
 Installing for non-admin users
   - Admin must install once to /Applications, or drag to
     ~/Applications or Desktop
@@ -335,7 +416,8 @@ Large grid (40x40, 80x80) is slow
 
 FILE LOCATIONS
 /Users/Shared/Videohub Controller/videohub_controller.json
-    All settings, presets, session state (shared by all users)
+    All settings, presets, device configs, session state
+    (shared by all users on the Mac)
 
 ~/Library/Application Support/Videohub Controller/logs/
     console.log         Current session log

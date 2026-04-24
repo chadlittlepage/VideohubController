@@ -4,29 +4,32 @@
 
 [![CI](https://github.com/chadlittlepage/VideohubController/actions/workflows/ci.yml/badge.svg)](https://github.com/chadlittlepage/VideohubController/actions)
 
-Native macOS routing control application for Blackmagic Videohub SDI routers. Supports all models from Mini 4x2 to 80x80 with dynamic I/O sizing, a crosspoint matrix GUI, editable labels, routing presets with hotkey recall, Bonjour device discovery, and a hardware-style LCD display.
+Native macOS routing control application for Blackmagic Videohub SDI routers. Supports all models from Mini 4x2 to 80x80 with automatic discovery, multi-device management, per-device presets, custom device naming, and a hardware-style LCD display.
 
 ## Features
 
 - **All Videohub models** -- dynamic I/O from Mini 4x2 up to 80x80 (6,400 crosspoints); GUI rebuilds automatically when you switch models
+- **Auto-discovery** -- finds Videohubs on your network via Bonjour on launch and connects automatically; no manual IP entry needed
+- **Multi-device management** -- Device dropdown in the toolbar lists all known Videohubs; switch between devices with one click; each device saves its own config independently
+- **Custom device names** -- right-click the Device dropdown or use Settings to give each Videohub a custom name (e.g., "Edit Suite A"); names persist across restarts
+- **Per-device storage** -- presets, hotkey bindings, labels, font sizes, and session state are stored per hardware Unique ID; two identical models get separate configs
 - **Hardware-style LCD display** -- simulated display in the title bar shows source/destination labels, hover position in yellow, and preset name on recall
 - **Crosspoint matrix** -- click any cell to route an input to an output instantly; yellow crosshair guides follow your cursor; scrollable for grids larger than 12x12
-- **Bonjour discovery** -- click Discover to find Videohubs on your local network via mDNS; auto-fills the IP and connects
-- **Auto-connect on launch** -- reconnects to the last used IP automatically with no clicks needed
+- **Bonjour + port scan discovery** -- Discover button runs Bonjour browse, then falls back to scanning port 9990 on local subnets for non-Bonjour devices
 - **Bidirectional hardware sync** -- routes set in the GUI update the hardware; changes made on the front panel are reflected back in real time
-- **Editable labels** -- rename any input or output; names are sent to the Videohub when connected and persist across restarts
-- **Preset (salvo) save and recall** -- snapshot the full routing table to disk, then recall with a single click or hotkey; presets are model-specific
+- **Editable labels** -- rename any input or output; names are sent to the Videohub when connected and persist per-device across restarts
+- **Preset (salvo) save and recall** -- snapshot the full routing table to disk, then recall with a single click or hotkey; presets are per-device
 - **Preset rename** -- right-click or Control-click the preset dropdown to rename a preset in place; hotkey bindings are preserved
 - **Hotkey presets (1-0)** -- assign up to 10 presets to keyboard keys for instant one-touch recall; click the number indicators or press the key
 - **Three-state hotkey indicators** -- grey (unassigned), yellow (assigned), green (active) number badges show hotkey status at a glance
-- **Global hotkeys** -- keys 1-0 work even when the app is not focused (requires Accessibility permission)
+- **Global hotkeys** -- keys 1-0 work even when the app is not focused (requires Accessibility permission); dialog guides you through setup
 - **Keep on Top** -- float the window above other apps like DaVinci Resolve
-- **Device model selection** -- choose your Videohub model in Settings or let the app auto-detect from hardware on connect
-- **Per-model sessions** -- each device model saves its own routing, labels, presets, font sizes, and hotkey bindings independently; switching models restores exactly where you left off
-- **Export/Import settings** -- save all configuration as JSON to transfer between machines or back up your setup
-- **Settings panel (Cmd+,)** -- live font-size sliders for LCD, labels, and grid headers; device model dropdown; hotkey assignments; Keep on Top and Global Hotkeys toggles; Reset per-model
-- **Console logging** -- all events are captured to a timestamped log file with automatic rotation; export via Help menu for remote debugging
-- **Full session persistence** -- IP, labels, routing, presets, font sizes, hotkey bindings, LCD state, and device model are all saved on quit and restored on launch
+- **Device model auto-detect** -- model detected from hardware on connect; Settings dropdown updates automatically
+- **Export/Import settings** -- save all configuration (including all devices) as JSON to transfer between machines
+- **Settings panel (Cmd+,)** -- device model, device names, font-size sliders, hotkey assignments, Keep on Top, Global Hotkeys, Reset per-model
+- **Console logging** -- every action logged with timestamps for remote debugging; export via Help menu
+- **Window size persistence** -- window size and position remembered across restarts
+- **Full session persistence** -- everything saved per-device on quit and restored on launch
 - **Resizable and full screen** -- dark native Cocoa GUI; Cmd+F for full screen
 - **In-app manual** -- full user guide accessible from the Help menu
 
@@ -43,9 +46,7 @@ No Python installation required for the signed .app bundle.
 
 ### Signed .app bundle (recommended)
 
-Download the latest DMG from [Releases](https://github.com/chadlittlepage/VideohubController/releases), open it, and drag Videohub Controller to Applications.
-
-The app is code-signed with Developer ID, notarized by Apple, and stapled for offline Gatekeeper validation.
+Download the latest DMG from [Releases](https://github.com/chadlittlepage/VideohubController/releases), open it, drag to Applications. Code-signed, Apple notarized, and stapled.
 
 ### Development mode
 
@@ -62,7 +63,6 @@ Requires Python 3.12+ and PyObjC.
 
 ```bash
 pip3 install py2app
-# Move pyproject.toml aside temporarily
 mv pyproject.toml pyproject.toml.bak
 ln -s src/videohub_controller videohub_controller
 python3 setup.py py2app
@@ -77,13 +77,19 @@ Output: `dist/Videohub Controller.app`
 ### Connect
 
 1. Launch Videohub Controller.
-2. Click **Discover** to find Videohubs on your network automatically, or enter the IP address manually.
-3. Click **Connect**. The matrix and labels populate from the hardware's current state.
-4. The app auto-connects on launch if a saved IP exists.
+2. The app automatically discovers Videohubs via Bonjour and connects.
+3. If multiple devices are found, select one from the Device dropdown.
+4. Or enter an IP manually and click Connect.
+
+### Multiple devices
+
+The Device dropdown in the toolbar shows all known Videohubs. Switch between devices with one click. Each device's presets, labels, hotkeys, and settings are stored independently.
+
+Right-click the Device dropdown to rename a device (e.g., "Edit Suite A"). Custom names also editable in Settings > Device Names.
 
 ### Device model
 
-Open **Settings** (Cmd+,) and choose your Videohub model:
+The model is auto-detected from hardware on connect. You can also manually select a model in Settings (Cmd+,):
 
 | Model | I/O |
 |---|---|
@@ -97,19 +103,13 @@ Open **Settings** (Cmd+,) and choose your Videohub model:
 | Videohub 40x40 12G | 40 in / 40 out |
 | Videohub 80x80 12G | 80 in / 80 out |
 
-The entire GUI rebuilds dynamically when you change models. The model selection persists across restarts.
-
 ### Route
 
 Click any cell in the matrix. A yellow dot marks the active route for each output row. Crosshair guides follow your cursor. The LCD display shows the source and destination labels.
 
-For grids larger than 10x10, headers show numbers only. Grids larger than 12x12 are scrollable.
-
 ### Rename labels
 
 Click a label field, type a new name, and press Return. The name is sent to the Videohub when connected and updates the LCD immediately.
-
-For models over 10 I/O, labels appear in two columns (inputs left, outputs right) with a scrollable panel.
 
 ### Presets
 
@@ -118,18 +118,17 @@ For models over 10 I/O, labels appear in two columns (inputs left, outputs right
 - **Delete** -- select and click Delete; confirms before deleting
 - **Rename** -- right-click (or Control-click) the preset dropdown and click "Rename..."
 
-Presets are model-specific: only presets saved for the current I/O size appear in the dropdown.
+Presets are per-device: each Videohub has its own set of presets.
 
 ### Hotkey presets
 
 Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicator badge. Enable **Global Hotkeys** in Settings so keys work even when the app is not focused (requires Accessibility permission).
 
-Indicator states: **grey** (unassigned), **yellow** (assigned), **green** (active).
-
 ### Settings (Cmd+,)
 
-- **Device Model** -- select your Videohub model; GUI rebuilds dynamically
-- **Font Sizes** -- LCD display, input/output labels, grid headers (saved per-model)
+- **Device Model** -- select your Videohub model; auto-detected from hardware
+- **Device Names** -- dropdown of all known devices; type a Custom Name for the selected device
+- **Font Sizes** -- LCD display, input/output labels, grid headers (saved per-device)
 - **Keep on Top** -- float above other apps
 - **Global Hotkeys** -- keys 1-0 work when app is not focused
 - **Hotkey Presets** -- assign presets to keys 1-0
@@ -137,7 +136,7 @@ Indicator states: **grey** (unassigned), **yellow** (assigned), **green** (activ
 
 ### Export / Import
 
-- **Export Settings** (Shift+Cmd+E) -- save all config as JSON
+- **Export Settings** (Shift+Cmd+E) -- save all config as JSON (includes all devices)
 - **Import Settings** (Shift+Cmd+I) -- load config from JSON
 
 ## Keyboard Shortcuts
@@ -153,14 +152,15 @@ Indicator states: **grey** (unassigned), **yellow** (assigned), **green** (activ
 | Shift+Cmd+I | Import Settings |
 | Cmd+C/V/X/A | Copy, paste, cut, select all |
 | 1-9, 0 | Recall hotkey preset |
-| Return/Enter | Confirm label rename |
+| Return/Enter | Confirm label rename / device name |
 | Tab | Next label field |
-| Right-click | Rename selected preset |
+| Right-click | Rename (on preset or device dropdown) |
 
 ## Troubleshooting
 
 **Can't connect**
-- Click Discover to find devices via Bonjour
+- The app auto-discovers via Bonjour on launch
+- Click Discover for a deeper search (port scan fallback)
 - Verify the Videohub is powered on and on the network
 - The app retries 3 times automatically
 
@@ -171,13 +171,14 @@ Indicator states: **grey** (unassigned), **yellow** (assigned), **green** (activ
 - Click the grid to deactivate text fields
 - For Global Hotkeys: grant Accessibility permission in System Settings > Privacy & Security > Accessibility
 
+**Multiple devices**
+- All discovered devices appear in the Device dropdown
+- The last-used device is auto-selected on launch
+- Each device is identified by its hardware Unique ID
+
 **"Items had to be skipped" when installing**
 - Dragging to /Applications requires an admin account
 - Or drag to ~/Applications or Desktop instead
-
-**Large grid (40x40, 80x80) is slow**
-- Switching models takes a few seconds for large grids
-- Use full screen (Cmd+F) for more space
 
 ## Videohub Protocol
 
@@ -190,7 +191,7 @@ Communicates over the Blackmagic Videohub Ethernet Protocol on TCP port 9990. Fu
 | Language | Python 3.12+ |
 | GUI framework | PyObjC / AppKit (native Cocoa) |
 | Graphics | Quartz CGColor, CATransaction batching |
-| Discovery | NSNetServiceBrowser (Bonjour/mDNS) |
+| Discovery | NSNetServiceBrowser (Bonjour/mDNS), port scan fallback |
 | Bundling | py2app |
 | Distribution | Developer ID signed, Apple notarized, stapled DMG |
 | Networking | Raw TCP sockets, threaded receive loop |
@@ -199,7 +200,7 @@ Communicates over the Blackmagic Videohub Ethernet Protocol on TCP port 9990. Fu
 
 | Path | Contents |
 |---|---|
-| `/Users/Shared/Videohub Controller/videohub_controller.json` | All settings, presets, session state (shared by all users) |
+| `/Users/Shared/Videohub Controller/videohub_controller.json` | All settings, presets, device configs, session state (shared by all users) |
 | `~/Library/Application Support/Videohub Controller/logs/console.log` | Current session log |
 | `~/Library/Application Support/Videohub Controller/logs/console.log.old` | Previous archived log |
 
@@ -212,9 +213,9 @@ VideohubController/
   src/videohub_controller/
     __init__.py          Package version
     app.py               Main Cocoa GUI and AppController
-    connection.py        TCP connection manager and Bonjour discovery
-    presets.py           Preset save/recall and per-model session persistence
-    settings_window.py   Settings panel (model, fonts, hotkeys, toggles)
+    connection.py        TCP connection manager, Bonjour discovery, port scan
+    presets.py           Preset save/recall, per-device session persistence
+    settings_window.py   Settings panel (model, device names, fonts, hotkeys)
     console_log.py       Tee stdout/stderr to timestamped log file
     manual_window.py     In-app manual window
     about_window.py      About window with background image overlay

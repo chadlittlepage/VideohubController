@@ -30,6 +30,96 @@ VIDEOHUB_MODELS = {
 MODEL_NAMES = list(VIDEOHUB_MODELS.keys())
 
 
+def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
+    """Scan all local subnets for devices listening on port 9990.
+
+    This is the fallback when Bonjour finds nothing — it probes every
+    IP on each active interface's subnet with a fast TCP connect.
+    Returns a list of dicts: [{"name": "Videohub", "host": "...", "port": 9990}, ...]
+    """
+    import ipaddress
+    import struct
+    import fcntl
+
+    results = []
+
+    # Get all active IPv4 interfaces and their subnets
+    subnets = set()
+    try:
+        import netifaces
+        for iface in netifaces.interfaces():
+            addrs = netifaces.ifaddresses(iface)
+            for info in addrs.get(netifaces.AF_INET, []):
+                ip = info.get("addr", "")
+                mask = info.get("netmask", "")
+                if ip.startswith("127."):
+                    continue
+                try:
+                    net = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
+                    subnets.add(net)
+                except Exception:
+                    pass
+    except ImportError:
+        # netifaces not available — parse ifconfig output
+        import subprocess
+        try:
+            out = subprocess.check_output(["ifconfig"], text=True)
+            current_ip = None
+            for line in out.splitlines():
+                if "inet " in line and "127.0.0.1" not in line:
+                    parts = line.split()
+                    ip_idx = parts.index("inet") + 1
+                    mask_idx = parts.index("netmask") + 1 if "netmask" in parts else -1
+                    if ip_idx < len(parts) and mask_idx > 0 and mask_idx < len(parts):
+                        ip = parts[ip_idx]
+                        mask_hex = parts[mask_idx]
+                        try:
+                            mask_int = int(mask_hex, 16)
+                            mask_str = str(ipaddress.IPv4Address(mask_int))
+                            net = ipaddress.IPv4Network(f"{ip}/{mask_str}", strict=False)
+                            subnets.add(net)
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"[discovery] Failed to enumerate interfaces: {e}")
+
+    if not subnets:
+        print("[discovery] No active subnets found for port scan")
+        return results
+
+    import time as _time
+    scan_start = _time.time()
+    SCAN_TIMEOUT = 15  # max seconds for entire port scan
+
+    for net in subnets:
+        # Skip huge subnets (>254 hosts)
+        if net.num_addresses > 256:
+            print(f"[discovery] Skipping {net} (too large: {net.num_addresses} hosts)")
+            continue
+        print(f"[discovery] Scanning {net} for port 9990 ({net.num_addresses - 2} hosts)...")
+
+        for host in net.hosts():
+            if cancel_event and cancel_event.is_set():
+                print("[discovery] Port scan cancelled")
+                return results
+            if _time.time() - scan_start > SCAN_TIMEOUT:
+                print("[discovery] Port scan timed out (15s)")
+                return results
+            host_str = str(host)
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.15)
+                s.connect((host_str, VIDEOHUB_PORT))
+                s.close()
+                print(f"[discovery] Port 9990 open: {host_str}")
+                results.append({"name": "Videohub", "host": host_str, "port": VIDEOHUB_PORT})
+            except Exception:
+                pass
+
+    print(f"[discovery] Port scan complete: {len(results)} device(s) found")
+    return results
+
+
 def discover_videohubs(timeout: float = 3.0, callback=None,
                        cancel_event: threading.Event = None) -> list[dict]:
     """Discover Videohubs on the local network via Bonjour/mDNS.
@@ -48,24 +138,39 @@ def discover_videohubs(timeout: float = 3.0, callback=None,
     from Foundation import NSObject, NSRunLoop, NSDate, NSDefaultRunLoopMode
 
     results = []
+    pending_services = []  # prevent GC of services being resolved
 
     class BrowseDelegate(NSObject):
         def netServiceBrowser_didFindService_moreComing_(self, browser, service, more):
+            print(f"[discovery] Service found: {service.name()} (resolving...)")
+            pending_services.append(service)  # prevent GC
             service.setDelegate_(self)
             service.resolveWithTimeout_(5.0)
 
         def netServiceDidResolveAddress_(self, service):
             name = str(service.name())
-            host = str(service.hostName()).rstrip(".")
+            hostname = str(service.hostName()).rstrip(".")
             port = service.port()
-            entry = {"name": name, "host": host, "port": port}
+            # Resolve .local hostname to an IP address
+            ip = hostname
+            try:
+                addr_info = socket.getaddrinfo(hostname, port, socket.AF_INET)
+                if addr_info:
+                    ip = addr_info[0][4][0]  # first IPv4 address
+                    print(f"[discovery] Resolved hostname {hostname} -> {ip}")
+            except Exception as e:
+                print(f"[discovery] DNS resolve failed for {hostname}: {e}")
+            entry = {"name": name, "host": ip, "port": port}
             results.append(entry)
-            print(f"[discovery] Found: {name} at {host}:{port}")
+            print(f"[discovery] Found: {name} at {ip}:{port}")
             if callback:
                 try:
-                    callback(name, host, port)
-                except Exception:
-                    pass
+                    callback(name, ip, port)
+                except Exception as e:
+                    print(f"[discovery] Callback error: {e}")
+
+        def netService_didNotResolve_(self, service, error):
+            print(f"[discovery] Failed to resolve {service.name()}: {error}")
 
         def netServiceBrowser_didNotSearch_(self, browser, error):
             print(f"[discovery] Browse error: {error}")
@@ -75,13 +180,22 @@ def discover_videohubs(timeout: float = 3.0, callback=None,
         delegate = BrowseDelegate.alloc().init()
         browser = NSNetServiceBrowser.alloc().init()
         browser.setDelegate_(delegate)
+        print(f"[discovery] Browsing for {VIDEOHUB_BONJOUR_TYPE} in local. (timeout={timeout}s)")
         browser.searchForServicesOfType_inDomain_(VIDEOHUB_BONJOUR_TYPE, "local.")
 
-        # Pump run loop for the timeout duration, checking for cancel
+        # Pump run loop until timeout or cancel.
+        # After first result, keep browsing for 1s more to find additional devices.
         deadline = NSDate.dateWithTimeIntervalSinceNow_(timeout)
+        grace_deadline = None
         while NSDate.date().compare_(deadline) < 0:
             if cancel_event and cancel_event.is_set():
                 print("[discovery] Cancelled by user")
+                break
+            if results and grace_deadline is None:
+                # Found at least one — give 1s more for others
+                grace_deadline = NSDate.dateWithTimeIntervalSinceNow_(1.0)
+                print(f"[discovery] First device found, browsing 1s more for others...")
+            if grace_deadline and NSDate.date().compare_(grace_deadline) >= 0:
                 break
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
                 NSDefaultRunLoopMode,
@@ -139,9 +253,10 @@ class VideohubConnection:
         # Trigger a quick Bonjour browse to ensure Local Network permission
         # is granted before attempting raw TCP (macOS 15+ requirement)
         try:
+            print("[connection] Pre-connect Bonjour probe (Local Network permission check)...")
             discover_videohubs(timeout=0.5)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[connection] Pre-connect probe failed: {e}")
         last_error = ""
         print(f"[connection] Connecting to {ip}:{VIDEOHUB_PORT} (up to {retries} attempts)...")
         for attempt in range(retries):
@@ -203,6 +318,7 @@ class VideohubConnection:
             except Exception as e:
                 print(f"[connection] Receive loop error: {e}")
                 break
+        print("[connection] Receive loop ended")
         self.connected = False
         if self.on_disconnect:
             self.on_disconnect()
@@ -229,13 +345,16 @@ class VideohubConnection:
                         val = val.strip()
                         if key == "Device present":
                             self.device_present = (val == "true")
+                            print(f"[connection] Device present: {val}")
                         elif key == "Model name":
                             self.model_name = val
-                            print(f"[connection] Model: {val}")
+                            print(f"[connection] Model name: {val}")
                         elif key == "Friendly name":
                             self.friendly_name = val
+                            print(f"[connection] Friendly name: {val}")
                         elif key == "Unique ID":
                             self.unique_id = val
+                            print(f"[connection] Unique ID: {val}")
                         elif key == "Video inputs":
                             try:
                                 new_in = int(val)
@@ -261,6 +380,7 @@ class VideohubConnection:
                                 pass
 
             elif header == "INPUT LABELS":
+                print(f"[connection] Received INPUT LABELS ({len(data)} entries)")
                 for line in data:
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
@@ -271,6 +391,7 @@ class VideohubConnection:
                         if 0 <= idx < self.num_inputs:
                             self.input_labels[idx] = parts[1]
             elif header == "OUTPUT LABELS":
+                print(f"[connection] Received OUTPUT LABELS ({len(data)} entries)")
                 for line in data:
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
@@ -281,6 +402,7 @@ class VideohubConnection:
                         if 0 <= idx < self.num_outputs:
                             self.output_labels[idx] = parts[1]
             elif header == "VIDEO OUTPUT ROUTING":
+                print(f"[connection] Received VIDEO OUTPUT ROUTING ({len(data)} entries)")
                 for line in data:
                     parts = line.split(" ", 1)
                     if len(parts) == 2:
@@ -325,3 +447,64 @@ class VideohubConnection:
             self.sock.sendall(cmd.encode("utf-8"))
         except Exception as e:
             print(f"[connection] Send output label failed: {e}")
+
+
+def probe_device_info(ip: str, port: int = VIDEOHUB_PORT,
+                      timeout: float = 2.0) -> dict | None:
+    """Quick TCP connect to read VIDEOHUB DEVICE block without full connection.
+
+    Returns dict with model_name, friendly_name, unique_id, num_inputs, num_outputs,
+    or None on failure.
+    """
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((ip, port))
+        buf = ""
+        import time
+        deadline = time.time() + timeout
+        info = {}
+        while time.time() < deadline:
+            try:
+                data = s.recv(4096)
+                if not data:
+                    break
+                buf += data.decode("utf-8", errors="replace")
+                while "\n\n" in buf:
+                    block, buf = buf.split("\n\n", 1)
+                    lines = block.strip().split("\n")
+                    if not lines:
+                        continue
+                    header = lines[0].rstrip(":")
+                    if header == "VIDEOHUB DEVICE":
+                        for line in lines[1:]:
+                            if ": " in line:
+                                k, v = line.split(": ", 1)
+                                k, v = k.strip(), v.strip()
+                                if k == "Model name":
+                                    info["model_name"] = v
+                                elif k == "Friendly name":
+                                    info["friendly_name"] = v
+                                elif k == "Unique ID":
+                                    info["unique_id"] = v
+                                elif k == "Video inputs":
+                                    info["num_inputs"] = int(v)
+                                elif k == "Video outputs":
+                                    info["num_outputs"] = int(v)
+                        if info.get("unique_id"):
+                            print(f"[probe] {ip}: {info.get('model_name', '?')} "
+                                  f"({info.get('friendly_name', '')}) id={info['unique_id']}")
+                            return info
+                        return None
+            except socket.timeout:
+                break
+    except Exception as e:
+        print(f"[probe] {ip}: failed — {e}")
+    finally:
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return None
