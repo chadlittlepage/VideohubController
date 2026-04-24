@@ -1244,7 +1244,7 @@ class AppController(NSObject):
             model = self.hub.model_name or "Videohub"
             ip = self.ip_field.stringValue().strip()
             self.set_status(f"Already connected to {model} at {ip}")
-            print(f"[discovery] Already connected — skipping")
+            print("[discovery] Already connected — skipping")
             return
         self._discover_cancel = threading.Event()
         self.discover_btn.setTitle_("Cancel")

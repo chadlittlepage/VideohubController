@@ -71,7 +71,7 @@ class PresetManager:
                         "session": dict(self.session),
                     }
                     self.last_device_id = "legacy"
-                    print(f"[presets] Migrated config to multi-device format (legacy entry)")
+                    print("[presets] Migrated config to multi-device format (legacy entry)")
                 n_devices = len(self.devices)
                 print(f"[presets] Loaded config: {len(self.presets)} presets, ip={self.last_ip}, "
                       f"model={self.settings.get('device_model', 'Auto-Detect')}, "

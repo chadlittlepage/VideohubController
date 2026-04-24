@@ -38,8 +38,6 @@ def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
     Returns a list of dicts: [{"name": "Videohub", "host": "...", "port": 9990}, ...]
     """
     import ipaddress
-    import struct
-    import fcntl
 
     results = []
 
@@ -64,7 +62,6 @@ def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
         import subprocess
         try:
             out = subprocess.check_output(["ifconfig"], text=True)
-            current_ip = None
             for line in out.splitlines():
                 if "inet " in line and "127.0.0.1" not in line:
                     parts = line.split()
@@ -194,7 +191,7 @@ def discover_videohubs(timeout: float = 3.0, callback=None,
             if results and grace_deadline is None:
                 # Found at least one — give 1s more for others
                 grace_deadline = NSDate.dateWithTimeIntervalSinceNow_(1.0)
-                print(f"[discovery] First device found, browsing 1s more for others...")
+                print("[discovery] First device found, browsing 1s more for others...")
             if grace_deadline and NSDate.date().compare_(grace_deadline) >= 0:
                 break
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
