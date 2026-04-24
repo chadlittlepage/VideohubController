@@ -4,39 +4,48 @@
 
 [![CI](https://github.com/chadlittlepage/VideohubController/actions/workflows/ci.yml/badge.svg)](https://github.com/chadlittlepage/VideohubController/actions)
 
-Native macOS routing control application for the Blackmagic Videohub 10x10 SDI router.
+Native macOS routing control application for Blackmagic Videohub SDI routers. Supports all models from Mini 4x2 to 80x80 with dynamic I/O sizing, a crosspoint matrix GUI, editable labels, routing presets with hotkey recall, Bonjour device discovery, and a hardware-style LCD display.
 
 ## Features
 
-- **10x10 crosspoint matrix** -- click any cell to route an input to an output instantly
-- **Hardware-style LCD display** -- simulated display in the title bar shows source and destination labels for the selected route, matching the Videohub's built-in screen
-- **Crosshair guides** -- yellow crosshair lines follow your cursor over the grid showing which input/output you are targeting; crosshairs persist after clicking to confirm the route
-- **Bidirectional hardware sync** -- routes set in the GUI update the hardware LEDs; changes made on the front panel buttons are reflected back in real time
-- **Editable labels** -- rename any input or output directly in the app; names update in the LCD display immediately and are sent to the Videohub when connected
-- **Preset (salvo) save and recall** -- snapshot the full routing table to disk, then recall with a single click or hotkey
-- **Hotkey presets (1-0)** -- assign up to 10 presets to keyboard keys 1 through 0 for instant one-touch recall; click the number indicators in the matrix title area or press the key
+- **All Videohub models** -- dynamic I/O from Mini 4x2 up to 80x80 (6,400 crosspoints); GUI rebuilds automatically when you switch models
+- **Hardware-style LCD display** -- simulated display in the title bar shows source/destination labels, hover position in yellow, and preset name on recall
+- **Crosspoint matrix** -- click any cell to route an input to an output instantly; yellow crosshair guides follow your cursor; scrollable for grids larger than 12x12
+- **Bonjour discovery** -- click Discover to find Videohubs on your local network via mDNS; auto-fills the IP and connects
+- **Auto-connect on launch** -- reconnects to the last used IP automatically with no clicks needed
+- **Bidirectional hardware sync** -- routes set in the GUI update the hardware; changes made on the front panel are reflected back in real time
+- **Editable labels** -- rename any input or output; names are sent to the Videohub when connected and persist across restarts
+- **Preset (salvo) save and recall** -- snapshot the full routing table to disk, then recall with a single click or hotkey; presets are model-specific
+- **Preset rename** -- right-click or Control-click the preset dropdown to rename a preset in place; hotkey bindings are preserved
+- **Hotkey presets (1-0)** -- assign up to 10 presets to keyboard keys for instant one-touch recall; click the number indicators or press the key
 - **Three-state hotkey indicators** -- grey (unassigned), yellow (assigned), green (active) number badges show hotkey status at a glance
-- **Settings panel (Cmd+,)** -- live font-size sliders for the LCD display, input/output labels, and grid headers; hotkey preset assignments; all settings persist across restarts
-- **Full session persistence** -- IP address, all labels, routing grid, selected preset, active hotkey, LCD state, and all settings are saved on quit and restored on launch
-- **Real-time connection status** -- green/red indicator dot with automatic detection of connection drops
-- **Resizable and full screen** -- dark native Cocoa GUI with square matrix cells at every window size; Cmd+F for full screen
-- **Copy and paste** -- full Edit menu with Cmd+C/V/X/A for IP address and label fields
-- **Automatic connection retry** -- retries up to 3 times with 1-second delays to handle transient network issues (adapter wake, route not ready)
-- **Verbose connection logging** -- every connection attempt, retry, and error is logged with timestamps to the console log for easy diagnostics
-- **Local Network permission** -- includes `NSLocalNetworkUsageDescription` for macOS 15 Sequoia; status bar guides you to toggle the permission if needed after an app update
-- **Console logging** -- all connection events, route changes, label edits, and errors are captured to a timestamped log file with automatic rotation
+- **Global hotkeys** -- keys 1-0 work even when the app is not focused (requires Accessibility permission)
+- **Keep on Top** -- float the window above other apps like DaVinci Resolve
+- **Device model selection** -- choose your Videohub model in Settings or let the app auto-detect from hardware on connect
+- **Per-model sessions** -- each device model saves its own routing, labels, presets, font sizes, and hotkey bindings independently; switching models restores exactly where you left off
+- **Export/Import settings** -- save all configuration as JSON to transfer between machines or back up your setup
+- **Settings panel (Cmd+,)** -- live font-size sliders for LCD, labels, and grid headers; device model dropdown; hotkey assignments; Keep on Top and Global Hotkeys toggles; Reset per-model
+- **Console logging** -- all events are captured to a timestamped log file with automatic rotation; export via Help menu for remote debugging
+- **Full session persistence** -- IP, labels, routing, presets, font sizes, hotkey bindings, LCD state, and device model are all saved on quit and restored on launch
+- **Resizable and full screen** -- dark native Cocoa GUI; Cmd+F for full screen
 - **In-app manual** -- full user guide accessible from the Help menu
-- **About window** -- version info and credits with background artwork overlay
 
 ## Requirements
 
 | Requirement | Minimum |
 |---|---|
-| macOS | 15.0 (Sequoia) or later |
-| Python | 3.12+ |
-| Hardware | Blackmagic Videohub (10x10 or compatible) on the same network |
+| macOS | 14.0 (Sonoma) or later |
+| Hardware | Any Blackmagic Videohub on the same network |
+
+No Python installation required for the signed .app bundle.
 
 ## Installation
+
+### Signed .app bundle (recommended)
+
+Download the latest DMG from [Releases](https://github.com/chadlittlepage/VideohubController/releases), open it, and drag Videohub Controller to Applications.
+
+The app is code-signed with Developer ID, notarized by Apple, and stapled for offline Gatekeeper validation.
 
 ### Development mode
 
@@ -47,65 +56,89 @@ pip3 install -e .
 videohub-controller
 ```
 
-### Standalone .app bundle (py2app)
+Requires Python 3.12+ and PyObjC.
+
+### Build from source
 
 ```bash
 pip3 install py2app
+# Move pyproject.toml aside temporarily
+mv pyproject.toml pyproject.toml.bak
+ln -s src/videohub_controller videohub_controller
 python3 setup.py py2app
+mv pyproject.toml.bak pyproject.toml
+rm videohub_controller
 ```
 
-The built application is placed at `dist/Videohub Controller.app`. The bundle is configured for code signing and notarization via the included `build_and_sign.sh` script and `entitlements.plist`.
+Output: `dist/Videohub Controller.app`
 
 ## Usage
 
 ### Connect
 
-1. Launch the app (or run `videohub-controller` from the terminal).
-2. Enter the Videohub's IP address in the top bar (paste with Cmd+V).
+1. Launch Videohub Controller.
+2. Click **Discover** to find Videohubs on your network automatically, or enter the IP address manually.
 3. Click **Connect**. The matrix and labels populate from the hardware's current state.
-4. The IP address is saved automatically and pre-filled on next launch.
+4. The app auto-connects on launch if a saved IP exists.
+
+### Device model
+
+Open **Settings** (Cmd+,) and choose your Videohub model:
+
+| Model | I/O |
+|---|---|
+| Auto-Detect | Detects from hardware on connect |
+| Videohub Mini 4x2 12G | 4 in / 2 out |
+| Videohub Mini 6x2 12G | 6 in / 2 out |
+| Videohub Mini 8x4 12G | 8 in / 4 out |
+| Videohub 10x10 12G | 10 in / 10 out |
+| Smart Videohub CleanSwitch 12x12 | 12 in / 12 out |
+| Videohub 20x20 12G | 20 in / 20 out |
+| Videohub 40x40 12G | 40 in / 40 out |
+| Videohub 80x80 12G | 80 in / 80 out |
+
+The entire GUI rebuilds dynamically when you change models. The model selection persists across restarts.
 
 ### Route
 
-Click any cell in the 10x10 matrix. A yellow dot marks the active route for each output row. Crosshair guides follow your cursor to help target the right cell. The corresponding hardware LED updates immediately.
+Click any cell in the matrix. A yellow dot marks the active route for each output row. Crosshair guides follow your cursor. The LCD display shows the source and destination labels.
 
-The LCD display in the title bar shows the source and destination labels for the last clicked route.
+For grids larger than 10x10, headers show numbers only. Grids larger than 12x12 are scrollable.
 
 ### Rename labels
 
-Click an input or output label field, type a new name, and press Return. The LCD display updates immediately. When connected, the name is sent to the Videohub hardware. Labels persist across app restarts.
+Click a label field, type a new name, and press Return. The name is sent to the Videohub when connected and updates the LCD immediately.
+
+For models over 10 I/O, labels appear in two columns (inputs left, outputs right) with a scrollable panel.
 
 ### Presets
 
-- **Save** -- Click Save and enter a preset name. The current routing table is written to disk.
-- **Recall** -- Select a preset from the dropdown, click Recall. All 10 routes are applied to the grid and sent to the hardware. Works offline too.
-- **Delete** -- Select a preset and click Delete. A confirmation dialog appears. Any hotkey binding for the deleted preset is automatically cleared.
+- **Save** -- click Save and enter a name
+- **Recall** -- select from the dropdown and click Recall, or use a hotkey
+- **Delete** -- select and click Delete; confirms before deleting
+- **Rename** -- right-click (or Control-click) the preset dropdown and click "Rename..."
 
-The preset dropdown shows hotkey assignments: `[1]  Studio A` means that preset is bound to key 1.
+Presets are model-specific: only presets saved for the current I/O size appear in the dropdown.
 
 ### Hotkey presets
 
-Assign presets to keys 1-9 and 0 for instant recall:
+Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicator badge. Enable **Global Hotkeys** in Settings so keys work even when the app is not focused (requires Accessibility permission).
 
-1. Open **Settings** (Cmd+,)
-2. Under **Hotkey Presets**, select a preset for each key
-3. Press the number key or click the indicator badge in the matrix title area
+Indicator states: **grey** (unassigned), **yellow** (assigned), **green** (active).
 
-Indicator states:
-- **Grey** -- no preset assigned
-- **Yellow** -- preset assigned, not currently active
-- **Green** -- preset currently active
+### Settings (Cmd+,)
 
-### Settings
-
-Open with **Cmd+,** or from the app menu:
-
-- **Display Font Size** -- scales the LCD display and title bar
-- **Input/Output Labels Font Size** -- scales label text in the left panel
-- **Grid IN/OUT Header Font Size** -- scales column and row headers
+- **Device Model** -- select your Videohub model; GUI rebuilds dynamically
+- **Font Sizes** -- LCD display, input/output labels, grid headers (saved per-model)
+- **Keep on Top** -- float above other apps
+- **Global Hotkeys** -- keys 1-0 work when app is not focused
 - **Hotkey Presets** -- assign presets to keys 1-0
+- **Reset This Device Model** -- erases labels, presets, and hotkey bindings for the current model only
 
-All settings apply instantly and persist across restarts.
+### Export / Import
+
+- **Export Settings** (Shift+Cmd+E) -- save all config as JSON
+- **Import Settings** (Shift+Cmd+I) -- load config from JSON
 
 ## Keyboard Shortcuts
 
@@ -114,46 +147,41 @@ All settings apply instantly and persist across restarts.
 | Cmd+Q | Quit |
 | Cmd+H | Hide |
 | Cmd+F | Toggle full screen |
-| Cmd+, | Open Settings |
-| Cmd+C/V/X/A | Copy, paste, cut, select all (in text fields) |
-| 1-9, 0 | Recall hotkey preset (when no text field is focused) |
+| Cmd+, | Open/close Settings |
+| Escape | Close Settings / cancel discovery |
+| Shift+Cmd+E | Export Settings |
+| Shift+Cmd+I | Import Settings |
+| Cmd+C/V/X/A | Copy, paste, cut, select all |
+| 1-9, 0 | Recall hotkey preset |
 | Return/Enter | Confirm label rename |
-| Tab | Move to next label field |
+| Tab | Next label field |
+| Right-click | Rename selected preset |
 
 ## Troubleshooting
 
-**"No route to host" after updating the app**
-
-macOS 15 requires Local Network permission for the app. After installing a new build, macOS may silently invalidate the permission even though the toggle appears ON. The app automatically opens System Settings to the right page when this happens -- just toggle Videohub Controller OFF then back ON and click Connect again.
-
 **Can't connect**
+- Click Discover to find devices via Bonjour
+- Verify the Videohub is powered on and on the network
+- The app retries 3 times automatically
 
-Verify the Videohub is powered on and on the same network. The app retries automatically (3 attempts with 1-second delays). Check the console log (Help > Export Console Log) for detailed connection diagnostics.
+**"No route to host" after app update**
+- macOS 15 may invalidate Local Network permission after re-signing. The app opens System Settings automatically. Toggle Videohub Controller OFF then ON.
+
+**Hotkeys not working**
+- Click the grid to deactivate text fields
+- For Global Hotkeys: grant Accessibility permission in System Settings > Privacy & Security > Accessibility
 
 **"Items had to be skipped" when installing**
+- Dragging to /Applications requires an admin account
+- Or drag to ~/Applications or Desktop instead
 
-Dragging to /Applications requires an admin account. Options for non-admin users:
-- Ask an admin to install once: `sudo cp -R "/Volumes/Videohub Controller/Videohub Controller.app" /Applications/`
-- Or drag to `~/Applications` or Desktop instead (no admin needed)
-
-**Shared presets across users**
-
-Presets and settings are stored in `/Users/Shared/Videohub Controller/` so all user accounts on the Mac share the same configuration. To install one user's presets as the default for everyone:
-```bash
-cp /Users/TheirUsername/.videohub_controller.json "/Users/Shared/Videohub Controller/videohub_controller.json"
-```
+**Large grid (40x40, 80x80) is slow**
+- Switching models takes a few seconds for large grids
+- Use full screen (Cmd+F) for more space
 
 ## Videohub Protocol
 
-Videohub Controller communicates over the Blackmagic Videohub Ethernet Protocol on **TCP port 9990**. The connection is fully bidirectional: commands are sent to the hardware and state updates are pushed back to every connected client.
-
-Multiple clients (including Blackmagic Videohub Software and Smart Control) can connect simultaneously and share the same live state.
-
-### Compatible models
-
-- Blackmagic Videohub 10x10 12G (primary target)
-- Any Blackmagic Videohub with 10 or fewer I/O
-- Larger models are supported but only the first 10 inputs and outputs are shown
+Communicates over the Blackmagic Videohub Ethernet Protocol on TCP port 9990. Fully bidirectional. Compatible with Blackmagic Videohub Software, Smart Control, and third-party automation systems. Multiple clients can connect simultaneously.
 
 ## Tech Stack
 
@@ -161,20 +189,21 @@ Multiple clients (including Blackmagic Videohub Software and Smart Control) can 
 |---|---|
 | Language | Python 3.12+ |
 | GUI framework | PyObjC / AppKit (native Cocoa) |
-| Graphics | Quartz CGColor for layer-backed views |
+| Graphics | Quartz CGColor, CATransaction batching |
+| Discovery | NSNetServiceBrowser (Bonjour/mDNS) |
 | Bundling | py2app |
-| Distribution | Code-signed and notarized .app bundle |
+| Distribution | Developer ID signed, Apple notarized, stapled DMG |
 | Networking | Raw TCP sockets, threaded receive loop |
 
 ## File Locations
 
 | Path | Contents |
 |---|---|
-| `/Users/Shared/Videohub Controller/videohub_controller.json` | Presets, session state, settings, hotkey bindings, and last-used IP (shared by all users) |
+| `/Users/Shared/Videohub Controller/videohub_controller.json` | All settings, presets, session state (shared by all users) |
 | `~/Library/Application Support/Videohub Controller/logs/console.log` | Current session log |
 | `~/Library/Application Support/Videohub Controller/logs/console.log.old` | Previous archived log |
 
-Logs auto-rotate after 30 days or when the file exceeds 10 MB (truncated to 5 MB).
+Logs auto-rotate after 30 days or when the file exceeds 10 MB.
 
 ## Project Structure
 
@@ -183,18 +212,18 @@ VideohubController/
   src/videohub_controller/
     __init__.py          Package version
     app.py               Main Cocoa GUI and AppController
-    connection.py        TCP connection manager (Videohub protocol)
-    presets.py           Preset save/recall and session persistence
-    settings_window.py   Settings panel (font sizes, hotkey bindings)
+    connection.py        TCP connection manager and Bonjour discovery
+    presets.py           Preset save/recall and per-model session persistence
+    settings_window.py   Settings panel (model, fonts, hotkeys, toggles)
     console_log.py       Tee stdout/stderr to timestamped log file
     manual_window.py     In-app manual window
     about_window.py      About window with background image overlay
   assets/
-    about_background.jpg
+    AppIcon.icns         Application icon
+    about_background.jpg About window background
   app_entry.py           Entry point for py2app bundle
   setup.py               py2app build configuration
   pyproject.toml         Package metadata and dependencies
-  build_and_sign.sh      Code signing and notarization script
   entitlements.plist     macOS entitlements for distribution
 ```
 

@@ -53,12 +53,15 @@ from videohub_controller.connection import (
     VideohubConnection, NUM_IO,
 )
 from videohub_controller.about_window import show_about_window
+from Quartz import CATransaction
 from videohub_controller.console_log import setup_logging, get_log_path
 from videohub_controller.manual_window import show_manual_window
 from videohub_controller.presets import PresetManager
 from videohub_controller.settings_window import (
     show_settings_window,
     invalidate_settings_window,
+    refresh_hotkey_popups,
+    refresh_font_sliders,
     DEFAULT_LCD_SIZE,
     DEFAULT_LABEL_SIZE,
     DEFAULT_GRID_HEADER_SIZE,
@@ -237,6 +240,35 @@ class MatrixOverlayView(NSView):
             self._controller._hide_crosshairs()
 
 
+class PresetPopUpButton(NSPopUpButton):
+    """NSPopUpButton that shows a Rename context menu on right-click."""
+
+    _controller = objc.ivar("_controller")
+
+    @objc.python_method
+    def _showRenameMenu(self, event):
+        if self.indexOfSelectedItem() <= 0:
+            return
+        from AppKit import NSMenu, NSMenuItem
+        ctx = NSMenu.alloc().init()
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Rename\u2026", "renamePresetFromMenu:", ""
+        )
+        item.setTarget_(self._controller)
+        ctx.addItem_(item)
+        NSMenu.popUpContextMenu_withEvent_forView_(ctx, event, self)
+
+    def rightMouseDown_(self, event):
+        self._showRenameMenu(event)
+
+    def mouseDown_(self, event):
+        # Control-click = right-click
+        if event.modifierFlags() & (1 << 18):  # NSEventModifierFlagControl
+            self._showRenameMenu(event)
+        else:
+            objc.super(PresetPopUpButton, self).mouseDown_(event)
+
+
 class MatrixButton(NSButton):
     """A crosspoint matrix button that knows its output/input indices."""
 
@@ -272,9 +304,11 @@ class InputLabelDelegate(NSObject):
         tf = notification.object()
         new_name = tf.stringValue().strip()
         if new_name:
+            old_name = self.controller.hub.input_labels[self.idx] if self.idx < len(self.controller.hub.input_labels) else ""
             self.controller.hub.set_input_label(self.idx, new_name)
             self.controller.refresh_matrix_headers()
             self.controller.set_status(f"Renamed Input {self.idx + 1}: {new_name}")
+            print(f"[label] Input {self.idx + 1}: '{old_name}' -> '{new_name}' (sent={'yes' if self.controller.hub.connected else 'offline'})")
             # Refresh LCD if this input is currently displayed
             if self.controller._lcd_selected_out is not None:
                 self.controller._update_lcd(self.controller._lcd_selected_out)
@@ -304,9 +338,11 @@ class OutputLabelDelegate(NSObject):
         tf = notification.object()
         new_name = tf.stringValue().strip()
         if new_name:
+            old_name = self.controller.hub.output_labels[self.idx] if self.idx < len(self.controller.hub.output_labels) else ""
             self.controller.hub.set_output_label(self.idx, new_name)
             self.controller.refresh_matrix_headers()
             self.controller.set_status(f"Renamed Output {self.idx + 1}: {new_name}")
+            print(f"[label] Output {self.idx + 1}: '{old_name}' -> '{new_name}' (sent={'yes' if self.controller.hub.connected else 'offline'})")
             # Refresh LCD if this output is currently displayed
             if self.controller._lcd_selected_out is not None:
                 self.controller._update_lcd(self.controller._lcd_selected_out)
@@ -330,6 +366,7 @@ class AppController(NSObject):
         from videohub_controller.connection import VIDEOHUB_MODELS
         saved_model = self.presets.settings.get("device_model", "Auto-Detect")
         init_in, init_out = VIDEOHUB_MODELS.get(saved_model, (NUM_IO, NUM_IO))
+        print(f"[app] Init model={saved_model} ({init_in}x{init_out})")
         self.hub = VideohubConnection(
             on_state_update=self._on_state_update,
             on_connect=self._on_connect,
@@ -368,7 +405,7 @@ class AppController(NSObject):
         )
         n_in = self.hub.num_inputs
         n_out = self.hub.num_outputs
-        win_w = min(1400, LABEL_COL_W + ROW_LABEL_W + (n_in * (MATRIX_CELL + 2)) + 60)
+        win_w = max(900, min(1400, LABEL_COL_W + ROW_LABEL_W + (n_in * (MATRIX_CELL + 2)) + 60))
         win_h = min(900, HEADER_H + CONN_BAR_H + 40 + (n_out * (MATRIX_CELL + 2)) + 80 + BOTTOM_BAR_H)
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -464,6 +501,14 @@ class AppController(NSObject):
         )
         self.lcd_view.addSubview_(self.lcd_dest_name)
 
+        # Hover position indicator (right side of LCD, yellow)
+        lcd_hover_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.78, 0.10, 1.0)
+        self.lcd_hover_label = _label(
+            NSMakeRect(0, 0, 100, 40), "", size=15, bold=True, color=lcd_hover_color,
+            align=NSRightTextAlignment,
+        )
+        self.lcd_view.addSubview_(self.lcd_hover_label)
+
         self._lcd_selected_out = None
         self._update_lcd_idle()
 
@@ -530,12 +575,15 @@ class AppController(NSObject):
         self.conn_bg.addSubview_(recall_btn)
 
         x -= gap + 180
-        self.preset_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+        self.preset_popup = PresetPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(x, 8, 180, 28), False
         )
+        self.preset_popup._controller = self
+        self.preset_popup.setBezelStyle_(1)  # NSBezelStyleRounded
         self._refresh_preset_popup()
         self.preset_popup.setAutoresizingMask_(1)
         self.conn_bg.addSubview_(self.preset_popup)
+
 
         x -= gap + 50
         preset_lbl = _label(
@@ -656,6 +704,13 @@ class AppController(NSObject):
     @objc.python_method
     def _rebuild_io(self, num_in, num_out):
         """Tear down and rebuild label entries and matrix buttons for a new I/O count."""
+        print(f"[ui] Rebuilding GUI: {self._num_inputs}x{self._num_outputs} -> {num_in}x{num_out} ({num_in * num_out} cells)")
+        # Note: caller (ModelSelectDelegate) saves session before resetting hub
+        if hasattr(self, 'info_label'):
+            total = num_in * num_out
+            if total > 400:
+                self.set_status(f"Building {num_in}x{num_out} grid ({total} cells)...")
+                self.info_label.display()
         self._num_inputs = num_in
         self._num_outputs = num_out
         large = max(num_in, num_out) > 10  # two-column layout for large models
@@ -879,11 +934,11 @@ class AppController(NSObject):
 
         # IN/OUT marker labels — in grid_parent so they scroll with the grid
         self._in_marker = _label(
-            NSMakeRect(0, 0, 30, 16), "IN \u25B6", size=9, bold=True, color=TEXT_WHITE,
+            NSMakeRect(0, 0, 30, 16), "IN \u25B6", size=9, bold=True, color=TEXT_DIM,
         )
         grid_parent.addSubview_(self._in_marker)
         self._out_marker = _label(
-            NSMakeRect(0, 0, 30, 16), "OUT \u25BC", size=9, bold=True, color=TEXT_WHITE,
+            NSMakeRect(0, 0, 30, 16), "OUT \u25BC", size=9, bold=True, color=TEXT_DIM,
         )
         grid_parent.addSubview_(self._out_marker)
 
@@ -912,7 +967,11 @@ class AppController(NSObject):
             grid_parent.addSubview_(row_lbl)
             self.row_headers.append(row_lbl)
 
-        # Create ALL buttons (for both large and small grids)
+        # Create ALL buttons — batch with CATransaction for speed
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+        inactive_bg = _cg(*INACTIVE_RGB)
+        click_sel = objc.selector(self.matrixClicked_, signature=b"v@:@")
         for out_idx in range(num_out):
             for in_idx in range(num_in):
                 btn = MatrixButton.alloc().initWithFrame_(NSMakeRect(0, 0, MATRIX_CELL, MATRIX_CELL))
@@ -921,29 +980,36 @@ class AppController(NSObject):
                 btn.setTitle_("")
                 btn.setBordered_(False)
                 btn.setWantsLayer_(True)
-                btn.layer().setCornerRadius_(2 if large else 4)
-                btn.layer().setBackgroundColor_(_cg(*INACTIVE_RGB))
+                if not large:
+                    btn.layer().setCornerRadius_(4)
+                btn.layer().setBackgroundColor_(inactive_bg)
                 btn.setTarget_(self)
-                btn.setAction_(objc.selector(self.matrixClicked_, signature=b"v@:@"))
+                btn.setAction_(click_sel)
                 grid_parent.addSubview_(btn)
                 self.matrix_buttons[(out_idx, in_idx)] = btn
+        CATransaction.commit()
 
-        # Bring crosshairs and overlay to front (above newly added buttons)
+        # Crosshairs and overlay — always present on ALL grid sizes
         if hasattr(self, 'crosshair_h'):
             self.crosshair_h.removeFromSuperview()
-            self.matrix_bg.addSubview_(self.crosshair_h)
+            grid_parent.addSubview_(self.crosshair_h)
         if hasattr(self, 'crosshair_v'):
             self.crosshair_v.removeFromSuperview()
-            self.matrix_bg.addSubview_(self.crosshair_v)
+            grid_parent.addSubview_(self.crosshair_v)
         if hasattr(self, 'matrix_overlay'):
             self.matrix_overlay.removeFromSuperview()
-            self.matrix_bg.addSubview_(self.matrix_overlay)
+            self.matrix_overlay.setController_(self)
+            grid_parent.addSubview_(self.matrix_overlay)
 
         # Layout and refresh
+        self._last_hover = (-1, -1)
         self._layout_matrix()
         self.refresh_matrix()
         self.apply_font_settings()
         self._refresh_preset_popup()
+        refresh_hotkey_popups(self)
+        # Restore the target model's saved session (routing, labels, etc.)
+        self._restore_session()
 
     def windowDidResize_(self, notification):
         f = self.window.frame()
@@ -1005,7 +1071,7 @@ class AppController(NSObject):
         from videohub_controller.settings_window import DEFAULT_GRID_HEADER_SIZE
         grid_font = self.presets.get_setting("grid_header_font_size", DEFAULT_GRID_HEADER_SIZE)
         font_scale = grid_font / DEFAULT_GRID_HEADER_SIZE
-        gap = 0 if large else 2
+        gap = 1 if max(n_cols, n_rows) > 20 else 2
         base_min = 12 if n_cols >= 80 or n_rows >= 80 else 20
         min_cell = max(base_min, int(base_min * font_scale))
         row_lbl_w = 40 if large else ROW_LABEL_W
@@ -1038,7 +1104,8 @@ class AppController(NSObject):
         else:
             # Fit to window
             cell_from_w = (available_w - gap * (n_cols - 1)) // max(n_cols, 1)
-            if not large:
+            if max(n_cols, n_rows) <= 20:
+                # Up to 20x20: size by width only, grid clips at bottom if needed
                 cell = max(min_cell, cell_from_w)
             else:
                 cell_from_h = (available_h - gap * (n_rows - 1)) // max(n_rows, 1)
@@ -1114,9 +1181,13 @@ class AppController(NSObject):
                     self.matrix_buttons[(out_idx, in_idx)].setFrame_(
                         NSMakeRect(x, row_y, cell, cell))
 
-        # Refresh overlay tracking area to match new bounds
+        # Refresh overlay tracking area to match grid bounds
         if hasattr(self, 'matrix_overlay'):
-            self.matrix_overlay.setFrame_(NSMakeRect(0, 0, mw, mh))
+            if has_scroll and self._grid_container:
+                cf = self._grid_container.frame()
+                self.matrix_overlay.setFrame_(NSMakeRect(0, 0, cf.size.width, cf.size.height))
+            else:
+                self.matrix_overlay.setFrame_(NSMakeRect(0, 0, mw, mh))
             self.matrix_overlay._setup_tracking()
             self._hide_crosshairs()
 
@@ -1133,6 +1204,7 @@ class AppController(NSObject):
         self._discover_cancel = threading.Event()
         self.discover_btn.setTitle_("Cancel")
         self.set_status("Discovering Videohubs on the network...")
+        print("[discovery] Starting Bonjour browse...")
         threading.Thread(target=self._do_discover, daemon=True).start()
 
     def cancelOperation_(self, sender):
@@ -1157,14 +1229,17 @@ class AppController(NSObject):
         cancelled = self._discover_cancel and self._discover_cancel.is_set()
         self._discover_cancel = None
         if cancelled:
+            print("[discovery] Cancelled by user")
             return
         if not devices or len(devices) == 0:
+            print("[discovery] No devices found")
             self.set_status("No Videohubs found. Enter IP manually.")
             return
         # Use the first discovered device
         dev = devices[0]
         ip = dev["host"]
         name = dev["name"]
+        print(f"[discovery] Selected: {name} at {ip}")
         self.ip_field.setStringValue_(ip)
         self.set_status(f"Found: {name} at {ip} — connecting...")
         self.connect_btn.setEnabled_(False)
@@ -1172,12 +1247,14 @@ class AppController(NSObject):
 
     def toggleConnection_(self, sender):
         if self.hub.connected:
+            print("[ui] Disconnect clicked")
             self.hub.disconnect()
         else:
             ip = self.ip_field.stringValue().strip()
             if not ip:
                 self.set_status("Enter an IP address")
                 return
+            print(f"[ui] Connect clicked: {ip}")
             self.set_status(f"Connecting to {ip}...")
             self.connect_btn.setEnabled_(False)
             threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
@@ -1197,6 +1274,7 @@ class AppController(NSObject):
     def connectionFailed_(self, msg):
         self.connect_btn.setEnabled_(True)
         msg_str = str(msg)
+        print(f"[connection] Failed: {msg_str}")
         if "No route to host" in msg_str or "Network is unreachable" in msg_str:
             self.set_status(
                 "Connection failed: No route to host. "
@@ -1226,6 +1304,7 @@ class AppController(NSObject):
         self.status_label.setStringValue_("Connected")
         self.status_dot.setTextColor_(GREEN)
         self.set_status(f"Connected to {model}")
+        print(f"[ui] Connected — model={model}, id={self.hub.unique_id}, inputs={self.hub.num_inputs}, outputs={self.hub.num_outputs}")
 
     @objc.python_method
     def _on_disconnect(self):
@@ -1242,6 +1321,7 @@ class AppController(NSObject):
         self.status_label.setStringValue_("Disconnected")
         self.status_dot.setTextColor_(RED)
         self.set_status("Disconnected")
+        print("[ui] Disconnected")
         self._lcd_selected_out = None
         self._update_lcd_idle()
 
@@ -1257,6 +1337,7 @@ class AppController(NSObject):
         # Check if hardware reported different I/O count — rebuild if needed
         if (self.hub.num_inputs != self._num_inputs or
                 self.hub.num_outputs != self._num_outputs):
+            print(f"[ui] Hardware I/O changed: {self._num_inputs}x{self._num_outputs} -> {self.hub.num_inputs}x{self.hub.num_outputs}")
             self._rebuild_io(self.hub.num_inputs, self.hub.num_outputs)
             self._update_lcd_idle()
             return
@@ -1272,12 +1353,14 @@ class AppController(NSObject):
         self._refresh_hotkey_indicators()
         out_idx = sender.output_idx
         in_idx = sender.input_idx
+        old_in = self.hub.routing[out_idx] if out_idx < len(self.hub.routing) else -1
         self.hub.set_route(out_idx, in_idx)
         self.hub.routing[out_idx] = in_idx
         self.refresh_matrix()
         in_name = self.hub.input_labels[in_idx]
         out_name = self.hub.output_labels[out_idx]
         self.set_status(f"Routed: {in_name} -> {out_name}")
+        print(f"[route] OUT {out_idx + 1} ({out_name}): IN {old_in + 1} -> IN {in_idx + 1} ({in_name}) (sent={'yes' if self.hub.connected else 'offline'})")
         self._show_crosshairs_at(out_idx, in_idx)
         self._update_lcd(out_idx)
 
@@ -1329,6 +1412,62 @@ class AppController(NSObject):
                 self._refresh_hotkey_indicators()
                 invalidate_settings_window()
                 self.set_status(f"Saved preset: {name}")
+                print(f"[preset] Saved '{name}' ({self._num_inputs}x{self._num_outputs})")
+
+    def renamePresetFromMenu_(self, sender):
+        """Rename the selected preset (triggered from right-click context menu)."""
+        idx = self.preset_popup.indexOfSelectedItem()
+        if idx <= 0:
+            self.set_status("Select a preset to rename")
+            return
+        raw = self.preset_popup.titleOfSelectedItem()
+        old_name = _strip_hotkey_prefix(raw)
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_('Rename Preset')
+        alert.setInformativeText_(f'Enter a new name for "{old_name}":')
+        alert.addButtonWithTitle_("Rename")
+        alert.addButtonWithTitle_("Cancel")
+        name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 200, 24))
+        name_field.setStringValue_(old_name)
+        alert.setAccessoryView_(name_field)
+        alert.window().setAppearance_(self.window.appearance())
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        new_name = name_field.stringValue().strip()
+        if not new_name or new_name == old_name:
+            return
+
+        # Rename in-place preserving order
+        preset_data = self.presets.get(old_name)
+        if not preset_data:
+            return
+        new_presets = {}
+        for k, v in self.presets.presets.items():
+            if k == old_name:
+                new_presets[new_name] = v
+            else:
+                new_presets[k] = v
+        self.presets.presets = new_presets
+
+        # Update hotkey bindings that pointed to old name
+        bindings = self.presets.get_key_bindings()
+        for key, bound_name in list(bindings.items()):
+            if bound_name == old_name:
+                self.presets.set_key_binding(key, new_name)
+
+        self.presets._write()
+        self._refresh_preset_popup()
+        # Re-select the renamed preset
+        for i in range(self.preset_popup.numberOfItems()):
+            if _strip_hotkey_prefix(self.preset_popup.itemTitleAtIndex_(i)) == new_name:
+                self.preset_popup.selectItemAtIndex_(i)
+                break
+        self._refresh_hotkey_indicators()
+        invalidate_settings_window()
+        refresh_hotkey_popups(self)
+        self.set_status(f'Renamed: "{old_name}" \u2192 "{new_name}"')
+        print(f"[preset] Renamed '{old_name}' -> '{new_name}'")
 
     def deletePreset_(self, sender):
         idx = self.preset_popup.indexOfSelectedItem()
@@ -1367,6 +1506,7 @@ class AppController(NSObject):
         invalidate_settings_window()
         self._save_session()
         self.set_status(f"Deleted preset: {name}")
+        print(f"[preset] Deleted '{name}'")
 
     def resignFocus_(self, _):
         self.window.makeFirstResponder_(None)
@@ -1378,7 +1518,11 @@ class AppController(NSObject):
         show_manual_window()
 
     def showSettings_(self, sender):
-        show_settings_window(self)
+        from videohub_controller.settings_window import _settings_window
+        if _settings_window is not None and _settings_window.isVisible():
+            _settings_window.close()
+        else:
+            show_settings_window(self)
 
     def exportSettings_(self, sender):
         """Export all settings (presets, IP, hotkeys, session) to a JSON file."""
@@ -1396,8 +1540,10 @@ class AppController(NSObject):
                 import shutil
                 shutil.copy2(str(CONFIG_PATH), str(panel.URL().path()))
                 self.set_status(f"Settings exported to {panel.URL().path()}")
+                print(f"[export] Settings exported to {panel.URL().path()}")
             except Exception as e:
                 self.set_status(f"Export failed: {e}")
+                print(f"[export] Failed: {e}")
 
     def importSettings_(self, sender):
         """Import all settings from a JSON file."""
@@ -1417,10 +1563,12 @@ class AppController(NSObject):
             if urls and len(urls) > 0:
                 source = str(urls[0].path())
                 try:
-                    data = json.loads(open(source).read())
+                    with open(source, encoding="utf-8") as f:
+                        data = json.loads(f.read())
                     # Validate it looks like our config
                     if "presets" not in data and "settings" not in data:
                         self.set_status("Import failed: not a valid settings file")
+                        print(f"[import] Rejected — not a valid settings file: {source}")
                         return
                     from videohub_controller.presets import CONFIG_PATH, _SHARED_DIR
                     _SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -1432,8 +1580,10 @@ class AppController(NSObject):
                     self._refresh_hotkey_indicators()
                     invalidate_settings_window()
                     self.set_status(f"Settings imported from {source}")
+                    print(f"[import] Settings imported from {source}")
                 except Exception as e:
                     self.set_status(f"Import failed: {e}")
+                    print(f"[import] Failed: {e}")
 
     def exportConsole_(self, sender):
         """Export console log via NSSavePanel."""
@@ -1448,8 +1598,10 @@ class AppController(NSObject):
             if src.exists():
                 shutil.copy2(str(src), str(panel.URL().path()))
                 self.set_status(f"Console log exported to {panel.URL().path()}")
+                print(f"[export] Console log exported to {panel.URL().path()}")
             else:
                 self.set_status("No console log found")
+                print("[export] No console log file found")
 
     # -- Refresh helpers --
 
@@ -1475,10 +1627,17 @@ class AppController(NSObject):
     def refresh_matrix(self):
         active_cg = _cg(0.90, 0.78, 0.10)
         inactive_cg = _cg(*INACTIVE_RGB)
-        small = self._grid_cell < 20  # no dot for tiny cells, just fill color
+        small = self._grid_cell < 20
+        with self.hub.lock:
+            routing_snapshot = list(self.hub.routing)
+        # Suppress CA animations for faster batch update
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
         for out_idx in range(self._num_outputs):
-            active_in = self.hub.routing[out_idx] if out_idx < len(self.hub.routing) else -1
+            active_in = routing_snapshot[out_idx] if out_idx < len(routing_snapshot) else -1
             for in_idx in range(self._num_inputs):
+                if (out_idx, in_idx) not in self.matrix_buttons:
+                    continue
                 btn = self.matrix_buttons[(out_idx, in_idx)]
                 if in_idx == active_in:
                     btn.setTitle_("" if small else "\u25cf")
@@ -1486,15 +1645,18 @@ class AppController(NSObject):
                 else:
                     btn.setTitle_("")
                     btn.layer().setBackgroundColor_(inactive_cg)
+        CATransaction.commit()
 
     @objc.python_method
     def _update_lcd(self, out_idx):
         """Update the LCD display to show the route for the given output."""
         self._lcd_selected_out = out_idx
         self._lcd_idle = False
+        if out_idx >= len(self.hub.routing):
+            return
         in_idx = self.hub.routing[out_idx]
-        out_name = self.hub.output_labels[out_idx]
-        in_name = self.hub.input_labels[in_idx]
+        out_name = self.hub.output_labels[out_idx] if out_idx < len(self.hub.output_labels) else f"Output {out_idx + 1}"
+        in_name = self.hub.input_labels[in_idx] if in_idx < len(self.hub.input_labels) else f"Input {in_idx + 1}"
         self.lcd_src_header.setStringValue_(f"{in_idx + 1:02d} | SRC")
         self.lcd_src_name.setStringValue_(in_name)
         self.lcd_src_name.setAlignment_(NSLeftTextAlignment)
@@ -1508,7 +1670,8 @@ class AppController(NSObject):
     def _update_lcd_idle(self):
         """Set the LCD to its idle/disconnected state."""
         self._lcd_idle = True
-        model = self.hub.model_name or "VIDEOHUB 10x10 12G"
+        saved_model = self.presets.settings.get("device_model", "Auto-Detect")
+        model = self.hub.model_name or (saved_model if saved_model != "Auto-Detect" else f"Videohub {self._num_inputs}x{self._num_outputs}")
         self.lcd_src_header.setStringValue_("")
         self.lcd_src_name.setStringValue_(model)
         self.lcd_src_name.setAlignment_(NSCenterTextAlignment)
@@ -1554,6 +1717,13 @@ class AppController(NSObject):
             self.lcd_dest_header.setFrame_(NSMakeRect(pad, dest_y, hdr_col_w, row_h))
             self.lcd_dest_name.setFrame_(NSMakeRect(pad + hdr_col_w, dest_y, name_col_w, row_h))
 
+        # Hover position label — right side of LCD, full height
+        if hasattr(self, 'lcd_hover_label'):
+            hover_w = 90
+            self.lcd_hover_label.setFrame_(
+                NSMakeRect(lcd_w - hover_w - pad, y_offset, hover_w, content_h)
+            )
+
     @objc.python_method
     def _handle_matrix_hover(self, pt):
         """Show crosshair lines at the hovered grid cell."""
@@ -1572,26 +1742,36 @@ class AppController(NSObject):
         self._last_hover = (col, row)
 
         if 0 <= col < self._num_inputs and 0 <= row < self._num_outputs:
-            # Cell origin
+            CATransaction.begin()
+            CATransaction.setDisableActions_(True)
+
             cx = self._grid_x + col * stride
             ry = self._grid_start_y - (row + 1) * stride + gap
 
-            # Vertical line: center of column, spans full grid height
             vx = cx + cell // 2
             vy = self._grid_start_y - self._num_outputs * stride + gap
             self.crosshair_v.setFrame_(NSMakeRect(vx - 1, vy, 2, self._grid_h))
             self.crosshair_v.setHidden_(False)
 
-            # Horizontal line: center of row, spans full grid width
             hy = ry + cell // 2
             self.crosshair_h.setFrame_(NSMakeRect(self._grid_x, hy - 1, self._grid_w, 2))
             self.crosshair_h.setHidden_(False)
+
+            CATransaction.commit()
+
+            # Show hover position in LCD display
+            if hasattr(self, 'lcd_hover_label'):
+                self.lcd_hover_label.setStringValue_(f"IN: {col + 1}\nOUT: {row + 1}")
         else:
             self._hide_crosshairs()
+            if hasattr(self, 'lcd_hover_label'):
+                self.lcd_hover_label.setStringValue_("")
 
     @objc.python_method
     def _show_crosshairs_at(self, row, col):
         """Show crosshair lines at a specific grid row/col."""
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
         cell = self._grid_cell
         gap = self._grid_gap
         stride = cell + gap
@@ -1600,19 +1780,23 @@ class AppController(NSObject):
         ry = self._grid_start_y - (row + 1) * stride + gap
 
         vx = cx + cell // 2
-        vy = self._grid_start_y - NUM_IO * stride + gap
+        vy = self._grid_start_y - self._num_outputs * stride + gap
         self.crosshair_v.setFrame_(NSMakeRect(vx - 1, vy, 2, self._grid_h))
         self.crosshair_v.setHidden_(False)
 
         hy = ry + cell // 2
         self.crosshair_h.setFrame_(NSMakeRect(self._grid_x, hy - 1, self._grid_w, 2))
         self.crosshair_h.setHidden_(False)
+        CATransaction.commit()
 
     @objc.python_method
     def _hide_crosshairs(self):
         """Hide the crosshair lines."""
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
         self.crosshair_h.setHidden_(True)
         self.crosshair_v.setHidden_(True)
+        CATransaction.commit()
 
     @objc.python_method
     def set_status(self, msg):
@@ -1748,6 +1932,7 @@ class AppController(NSObject):
         selected = _strip_hotkey_prefix(raw)
         if selected.startswith("\u2014"):
             selected = ""
+        print(f"[session] Saving {self._num_inputs}x{self._num_outputs} state (preset='{selected}')")
         self.presets.save_session(
             routing=self.hub.routing,
             input_labels=self.hub.input_labels,
@@ -1755,11 +1940,19 @@ class AppController(NSObject):
             selected_preset=selected,
             lcd_output=self._lcd_selected_out,
             active_hotkey=self._active_hotkey,
+            num_inputs=self._num_inputs,
+            num_outputs=self._num_outputs,
+            font_sizes={
+                "lcd_font_size": self.presets.get_setting("lcd_font_size", DEFAULT_LCD_SIZE),
+                "label_font_size": self.presets.get_setting("label_font_size", DEFAULT_LABEL_SIZE),
+                "grid_header_font_size": self.presets.get_setting("grid_header_font_size", DEFAULT_GRID_HEADER_SIZE),
+            },
         )
 
     @objc.python_method
     def _restore_session(self):
         """Restore session state from disk."""
+        print(f"[session] Restoring {self._num_inputs}x{self._num_outputs} state...")
         # Clean up orphaned key bindings (pointing to deleted presets)
         bindings = self.presets.get_key_bindings()
         preset_names = set(self.presets.names())
@@ -1768,8 +1961,11 @@ class AppController(NSObject):
                 self.presets.set_key_binding(key, "")
         self._refresh_preset_popup()
 
-        session = self.presets.get_session()
+        session = self.presets.get_session(
+            num_inputs=self._num_inputs, num_outputs=self._num_outputs
+        )
         if not session:
+            print("[session] No saved session for this model")
             return
 
         # Restore routing
@@ -1816,6 +2012,14 @@ class AppController(NSObject):
         if lcd_out is not None and 0 <= lcd_out < self._num_outputs:
             self._update_lcd(lcd_out)
 
+        # Restore per-model font sizes
+        font_sizes = session.get("font_sizes")
+        if font_sizes:
+            for key, val in font_sizes.items():
+                self.presets.settings[key] = val
+            self.apply_font_settings()
+            refresh_font_sliders(self)
+
     @objc.python_method
     def _refresh_hotkey_indicators(self):
         """Update hotkey indicator buttons — three states: grey/yellow/green."""
@@ -1830,7 +2034,9 @@ class AppController(NSObject):
         grey_bg = _cg(0.25, 0.25, 0.25)
         bold11 = NSFont.boldSystemFontOfSize_(11)
 
-        preset_names = set(self.presets.names())
+        preset_names = set(self.presets.names(
+            num_inputs=self._num_inputs, num_outputs=self._num_outputs
+        ))
         for i, key in enumerate("1234567890"):
             btn = self.hotkey_labels[i]
             bound_name = bindings.get(key, "")
@@ -1887,7 +2093,16 @@ class AppController(NSObject):
         bindings = self.presets.get_key_bindings()
         name = bindings.get(key, "")
         if not name:
+            print(f"[hotkeys] Key {key} pressed — no preset assigned")
             self.set_status(f"No preset assigned to Key {key}")
+            return
+        print(f"[hotkeys] Key {key} pressed — recalling '{name}'")
+        # Only recall if preset matches current I/O size
+        valid_names = set(self.presets.names(
+            num_inputs=self._num_inputs, num_outputs=self._num_outputs
+        ))
+        if name not in valid_names:
+            self.set_status(f"Key {key}: preset '{name}' is for a different model")
             return
         self._active_hotkey = key
         self._recall_preset_by_name(name)
@@ -1898,13 +2113,15 @@ class AppController(NSObject):
         """Recall a preset by name."""
         preset = self.presets.get(name)
         if not preset:
+            print(f"[preset] Recall failed — '{name}' not found")
             self.set_status(f"Preset '{name}' not found")
             return
+        print(f"[preset] Recalling '{name}' (connected={'yes' if self.hub.connected else 'no'})")
         routing = preset.get("routing", [])
 
         # Update routing only — preserve current labels
         for out_idx, in_idx in enumerate(routing):
-            if out_idx < NUM_IO and 0 <= in_idx < NUM_IO:
+            if out_idx < self._num_outputs and 0 <= in_idx < self._num_inputs:
                 self.hub.routing[out_idx] = in_idx
         self.refresh_matrix()
 
@@ -1914,6 +2131,19 @@ class AppController(NSObject):
             if _strip_hotkey_prefix(title) == name:
                 self.preset_popup.selectItemAtIndex_(i)
                 break
+
+        # Show preset name in LCD
+        self._lcd_idle = True
+        saved_model = self.presets.settings.get("device_model", "Auto-Detect")
+        model = self.hub.model_name or (saved_model if saved_model != "Auto-Detect" else f"Videohub {self._num_inputs}x{self._num_outputs}")
+        self.lcd_src_header.setStringValue_("")
+        self.lcd_src_name.setStringValue_(model)
+        self.lcd_src_name.setAlignment_(NSCenterTextAlignment)
+        self.lcd_dest_header.setStringValue_("")
+        self.lcd_dest_name.setStringValue_(f"Preset: {name}")
+        self.lcd_dest_name.setAlignment_(NSCenterTextAlignment)
+        if hasattr(self, 'conn_bg'):
+            self._layout_lcd_internals()
 
         # Send to hardware if connected
         if self.hub.connected:
@@ -1967,34 +2197,31 @@ class AppController(NSObject):
                     if flags & (1 << 20 | 1 << 18 | 1 << 19):
                         return
                     if key in "1234567890":
-                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            objc.selector(self._globalHotkeyFired_, signature=b"v@:@"),
-                            key,
-                            False,
-                        )
-                except Exception:
-                    pass
+                        print(f"[hotkeys] Global key detected: {key}")
+                        # Use AppHelper to safely call back to main thread
+                        from PyObjCTools import AppHelper
+                        AppHelper.callAfter(self._recall_preset_by_key, key)
+                except Exception as e:
+                    print(f"[hotkeys] Global handler error: {e}")
 
             self._global_key_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
                 NSKeyDownMask, global_handler
             )
             print("[hotkeys] Global hotkey monitor installed")
 
-    def _globalHotkeyFired_(self, key):
-        """Called on main thread when a global hotkey fires."""
-        self._recall_preset_by_key(str(key))
 
     @objc.python_method
     def _apply_keep_on_top(self, on):
         """Toggle the main window floating above all other apps."""
         from AppKit import NSFloatingWindowLevel, NSNormalWindowLevel
+        print(f"[settings] Keep on Top: {'ON' if on else 'OFF'}")
         if on:
             self.window.setLevel_(NSFloatingWindowLevel)
         else:
             self.window.setLevel_(NSNormalWindowLevel)
 
     def show(self):
-        self._restore_session()
+        # Session already restored by _rebuild_io during _build_window
         # Apply persisted window/hotkey settings
         if self.presets.settings.get("keep_on_top", False):
             self._apply_keep_on_top(True)
@@ -2022,6 +2249,7 @@ class AppController(NSObject):
     def _autoConnect_(self, _):
         ip = self.ip_field.stringValue().strip()
         if ip and not self.hub.connected:
+            print(f"[app] Auto-connecting to {ip}...")
             self.set_status(f"Auto-connecting to {ip}...")
             self.connect_btn.setEnabled_(False)
             threading.Thread(target=self._do_connect, args=(ip,), daemon=True).start()
@@ -2038,6 +2266,7 @@ class AppDelegate(NSObject):
         return self
 
     def applicationDidFinishLaunching_(self, notification):
+        print("[app] applicationDidFinishLaunching")
         self.controller = AppController.alloc().init()
         self.controller.show()
 
@@ -2045,6 +2274,7 @@ class AppDelegate(NSObject):
         return True
 
     def applicationWillTerminate_(self, notification):
+        print("[app] applicationWillTerminate — saving session...")
         if self.controller:
             self.controller._save_session()
             if hasattr(self.controller, '_key_monitor') and self.controller._key_monitor:
@@ -2082,6 +2312,10 @@ class AppDelegate(NSObject):
 
 def main():
     setup_logging()
+    import platform
+    print(f"[app] Videohub Controller v{__version__}")
+    print(f"[app] macOS {platform.mac_ver()[0]} ({platform.machine()})")
+    print(f"[app] Python {platform.python_version()}")
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)

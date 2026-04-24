@@ -11,6 +11,7 @@ from __future__ import annotations
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
+    NSButton,
     NSColor,
     NSFont,
     NSLeftTextAlignment,
@@ -33,6 +34,47 @@ DEFAULT_LABEL_SIZE = 11.0
 DEFAULT_GRID_HEADER_SIZE = 9.0
 
 _settings_window = None
+
+
+def refresh_font_sliders(controller):
+    """Update the font size sliders to match current settings values."""
+    sliders = getattr(controller, '_settings_font_sliders', None)
+    if not sliders:
+        return
+    defaults = {
+        "lcd_font_size": DEFAULT_LCD_SIZE,
+        "label_font_size": DEFAULT_LABEL_SIZE,
+        "grid_header_font_size": DEFAULT_GRID_HEADER_SIZE,
+    }
+    for key, (slider, value_lbl) in sliders.items():
+        val = controller.presets.get_setting(key, defaults.get(key, 9.0))
+        slider.setDoubleValue_(val)
+        value_lbl.setStringValue_(f"{val} pt")
+
+
+def refresh_hotkey_popups(controller):
+    """Refresh the hotkey preset popups in the open Settings window
+    to show only presets matching the current model I/O."""
+    popups = getattr(controller, '_settings_hotkey_popups', None)
+    if not popups:
+        return
+    preset_names = controller.presets.names(
+        num_inputs=controller._num_inputs, num_outputs=controller._num_outputs
+    )
+    bindings = controller.presets.get_key_bindings()
+    for i, key_label in enumerate(KEY_LABELS):
+        if i >= len(popups):
+            break
+        popup = popups[i]
+        popup.removeAllItems()
+        popup.addItemWithTitle_(NONE_LABEL)
+        for name in preset_names:
+            popup.addItemWithTitle_(name)
+        bound_name = bindings.get(key_label, "")
+        if bound_name and bound_name in preset_names:
+            popup.selectItemWithTitle_(bound_name)
+        else:
+            popup.selectItemAtIndex_(0)
 
 
 def invalidate_settings_window():
@@ -64,6 +106,11 @@ class SliderDelegate(NSObject):
         self.value_label.setStringValue_(f"{val} pt")
         self.controller.presets.set_setting(self.key, val)
         self.controller.apply_font_settings()
+        # Log only on mouse-up to avoid flooding during drag
+        from AppKit import NSApp as _app
+        event = _app.currentEvent()
+        if event and event.type() in (2, 7):  # NSEventTypeLeftMouseUp or NSEventTypeOtherMouseUp
+            print(f"[settings] {self.key}: {val} pt")
 
 
 def _make_label(frame, text, size=12, bold=False, color=TEXT_WHITE):
@@ -103,7 +150,7 @@ def _make_slider_row(parent, y, label_text, key, default, min_val, max_val, cont
     delegates.append(delegate)
     parent.addSubview_(slider)
 
-    return current
+    return current, slider, value_lbl
 
 
 KEY_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -126,10 +173,13 @@ class ModelSelectDelegate(NSObject):
         from videohub_controller.connection import MODEL_NAMES, VIDEOHUB_MODELS
         idx = sender.indexOfSelectedItem()
         model_key = MODEL_NAMES[idx]
+        num_in, num_out = VIDEOHUB_MODELS[model_key]
+        print(f"[settings] Device model changed: {model_key} ({num_in}x{num_out})")
         self.controller.presets.settings["device_model"] = model_key
         self.controller.presets._write()
-        num_in, num_out = VIDEOHUB_MODELS[model_key]
         if model_key != "Auto-Detect" and not self.controller.hub.connected:
+            # Save current model's state BEFORE resetting hub arrays
+            self.controller._save_session()
             self.controller.hub.num_inputs = num_in
             self.controller.hub.num_outputs = num_out
             self.controller.hub.input_labels = [f"Input {i+1}" for i in range(num_in)]
@@ -137,6 +187,9 @@ class ModelSelectDelegate(NSObject):
             self.controller.hub.routing = [0] * num_out
             self.controller._rebuild_io(num_in, num_out)
             self.controller.set_status(f"Set to {model_key} ({num_in}x{num_out})")
+        # Refresh hotkey popups and font sliders for the new model
+        refresh_hotkey_popups(self.controller)
+        refresh_font_sliders(self.controller)
 
 
 class ToggleDelegate(NSObject):
@@ -157,6 +210,7 @@ class ToggleDelegate(NSObject):
 
     def toggled_(self, sender):
         on = bool(sender.state())
+        print(f"[settings] {self.setting_key}: {'ON' if on else 'OFF'}")
         self.controller.presets.settings[self.setting_key] = on
         self.controller.presets._write()
         getattr(self.controller, self.method_name)(on)
@@ -179,8 +233,10 @@ class HotkeyDelegate(NSObject):
     def popupChanged_(self, sender):
         selected = sender.titleOfSelectedItem()
         if selected == NONE_LABEL:
+            print(f"[settings] Hotkey {self.key}: cleared")
             self.controller.presets.set_key_binding(self.key, "")
         else:
+            print(f"[settings] Hotkey {self.key}: bound to '{selected}'")
             self.controller.presets.set_key_binding(self.key, selected)
         self.controller._refresh_preset_popup()
         self.controller._refresh_hotkey_indicators()
@@ -194,7 +250,7 @@ def show_settings_window(controller):
         _settings_window.makeKeyAndOrderFront_(None)
         return
 
-    win_w, win_h = 400, 940
+    win_w, win_h = 400, 980
     style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 
     from AppKit import NSWindow, NSFloatingWindowLevel
@@ -245,24 +301,31 @@ def show_settings_window(controller):
     y -= 40
     cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Font Sizes", size=14, bold=True))
 
+    font_sliders = {}
+
     y -= 50
-    _make_slider_row(cv, y, "Display Font Size", "lcd_font_size",
-                     DEFAULT_LCD_SIZE, 8, 20, controller, delegates)
+    _, sl, vl = _make_slider_row(cv, y, "Display Font Size", "lcd_font_size",
+                                 DEFAULT_LCD_SIZE, 8, 20, controller, delegates)
+    font_sliders["lcd_font_size"] = (sl, vl)
 
     y -= 70
-    _make_slider_row(cv, y, "Input/Output Labels Font Size", "label_font_size",
-                     DEFAULT_LABEL_SIZE, 8, 18, controller, delegates)
+    _, sl, vl = _make_slider_row(cv, y, "Input/Output Labels Font Size", "label_font_size",
+                                 DEFAULT_LABEL_SIZE, 8, 18, controller, delegates)
+    font_sliders["label_font_size"] = (sl, vl)
 
     y -= 70
-    _make_slider_row(cv, y, "Grid IN/OUT Header Font Size", "grid_header_font_size",
-                     DEFAULT_GRID_HEADER_SIZE, 7, 16, controller, delegates)
+    _, sl, vl = _make_slider_row(cv, y, "Grid IN/OUT Header Font Size", "grid_header_font_size",
+                                 DEFAULT_GRID_HEADER_SIZE, 7, 30, controller, delegates)
+    font_sliders["grid_header_font_size"] = (sl, vl)
+
+    # Store slider refs for live refresh on model change
+    controller._settings_font_sliders = font_sliders
 
     # -- Window & Hotkey Behavior section --
     y -= 50
     cv.addSubview_(_make_label(NSMakeRect(20, y, 360, 20), "Window & Hotkey Behavior", size=14, bold=True))
 
     y -= 35
-    from AppKit import NSButton
     keep_on_top_check = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 360, 20))
     keep_on_top_check.setButtonType_(3)  # NSSwitchButton
     keep_on_top_check.setTitle_("Keep on Top")
@@ -328,6 +391,7 @@ def show_settings_window(controller):
     bindings = controller.presets.get_key_bindings()
     preset_names = controller.presets.names()
 
+    hotkey_popups = []
     for i, key_label in enumerate(KEY_LABELS):
         y -= 30
         display_key = key_label
@@ -355,10 +419,102 @@ def show_settings_window(controller):
         popup.setAction_(objc.selector(hk_delegate.popupChanged_, signature=b"v@:@"))
         delegates.append(hk_delegate)
         cv.addSubview_(popup)
+        hotkey_popups.append(popup)
+
+    # Store hotkey popups on controller for live refresh
+    controller._settings_hotkey_popups = hotkey_popups
+
+    # Reset button at bottom
+    y -= 40
+    reset_btn = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 360, 28))
+    reset_btn.setTitle_("Reset This Device Model...")
+    reset_btn.setBezelStyle_(1)
+
+    class ResetDelegate(NSObject):
+        ctrl = objc.ivar("ctrl")
+
+        @objc.python_method
+        def initWithController_(self, c):
+            self = self.init()
+            if self:
+                self.ctrl = c
+            return self
+
+        def resetClicked_(self, sender):
+            from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
+            saved_model = self.ctrl.presets.settings.get("device_model", "Auto-Detect")
+            if saved_model == "Auto-Detect":
+                model_name = f"Videohub {self.ctrl._num_inputs}x{self.ctrl._num_outputs}"
+            else:
+                model_name = saved_model
+
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_(f'Reset "{model_name}"?')
+            alert.setInformativeText_(
+                f"This will erase ALL Labels, Presets, and Hotkey Bindings "
+                f"for {model_name}.\n\nOther device models are not affected."
+            )
+            alert.addButtonWithTitle_("Reset")
+            alert.addButtonWithTitle_("Cancel")
+            dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+            if dark:
+                alert.window().setAppearance_(dark)
+            if alert.runModal() != NSAlertFirstButtonReturn:
+                return
+
+            n_in = self.ctrl._num_inputs
+            n_out = self.ctrl._num_outputs
+            print(f"[settings] Resetting {model_name} ({n_in}x{n_out}) — erasing labels, presets, hotkeys")
+
+            # Delete presets for this model
+            for name in list(self.ctrl.presets.names(num_inputs=n_in, num_outputs=n_out)):
+                # Clear any hotkey bindings pointing to this preset
+                bindings = self.ctrl.presets.get_key_bindings()
+                for key, bound in list(bindings.items()):
+                    if bound == name:
+                        self.ctrl.presets.set_key_binding(key, "")
+                self.ctrl.presets.delete(name)
+
+            # Reset routing and labels
+            self.ctrl.hub.input_labels = [f"Input {i+1}" for i in range(n_in)]
+            self.ctrl.hub.output_labels = [f"Output {i+1}" for i in range(n_out)]
+            self.ctrl.hub.routing = [0] * n_out
+            self.ctrl._active_hotkey = None
+            self.ctrl._lcd_selected_out = None
+
+            # Reset font sizes to defaults
+            self.ctrl.presets.settings["lcd_font_size"] = DEFAULT_LCD_SIZE
+            self.ctrl.presets.settings["label_font_size"] = DEFAULT_LABEL_SIZE
+            self.ctrl.presets.settings["grid_header_font_size"] = DEFAULT_GRID_HEADER_SIZE
+
+            # Save clean state and refresh everything
+            self.ctrl._save_session()
+            self.ctrl.refresh_labels()
+            self.ctrl.refresh_matrix()
+            self.ctrl.apply_font_settings()
+            self.ctrl._refresh_preset_popup()
+            self.ctrl._refresh_hotkey_indicators()
+            self.ctrl._update_lcd_idle()
+            refresh_hotkey_popups(self.ctrl)
+            refresh_font_sliders(self.ctrl)
+            self.ctrl.set_status(f"Reset {model_name} to defaults")
+
+    reset_del = ResetDelegate.alloc().initWithController_(controller)
+    reset_btn.setTarget_(reset_del)
+    reset_btn.setAction_(objc.selector(reset_del.resetClicked_, signature=b"v@:@"))
+    delegates.append(reset_del)
+    cv.addSubview_(reset_btn)
 
     # prevent GC — store on controller (can't set attrs on NSWindow in bundled app)
     controller._settings_delegates = delegates
 
     _settings_window = win
+    # ESC closes the window
+    esc_btn = NSButton.alloc().initWithFrame_(NSMakeRect(-100, -100, 0, 0))
+    esc_btn.setKeyEquivalent_("\x1b")  # Escape
+    esc_btn.setTarget_(win)
+    esc_btn.setAction_(objc.selector(None, selector=b"close", signature=b"v@:"))
+    cv.addSubview_(esc_btn)
+
     win.center()
     win.makeKeyAndOrderFront_(None)

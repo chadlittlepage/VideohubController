@@ -31,344 +31,315 @@ _RETAINED = []  # singleton — only keep the latest window
 
 
 MANUAL_TEXT = """\
-Videohub Controller v0.2.1 - User Manual
+Videohub Controller v0.4.0 - User Manual
 ==========================================
 
 OVERVIEW
 Videohub Controller is a native macOS application for controlling
-a Blackmagic Videohub 10x10 SDI router over Ethernet. It provides
-a crosspoint matrix GUI, editable input/output labels, routing
-presets with hotkey recall, a hardware-style LCD display, and
-customizable font sizes - all in a single window.
-
-When you click a cell in the matrix, the routing command is sent
-over TCP to the Videohub hardware. The front panel LEDs update
-instantly to match. Changes made on the hardware buttons are
-reflected back in the GUI in real time.
+Blackmagic Videohub SDI routers over Ethernet. It supports ALL
+Videohub models from Mini 4x2 to 80x80 with dynamic I/O sizing,
+a crosspoint matrix GUI, editable labels, routing presets with
+hotkey recall, Bonjour device discovery, and a hardware-style
+LCD display.
 
 
 GETTING STARTED
-1. Connect your Videohub 10x10 to the same network as your Mac.
-2. Launch Videohub Controller.
-3. Enter the Videohub's IP address in the top bar.
-4. Click Connect.
-5. The matrix and labels will populate from the hardware's
-   current state.
+1. Launch Videohub Controller.
+2. Click Discover to find Videohubs on your network automatically,
+   or enter the IP address manually.
+3. The app auto-connects on launch if a saved IP exists.
+4. The matrix and labels populate from the hardware's current state.
+
+
+DEVICE MODEL SELECTION
+Open Settings (Cmd+,) and choose your Videohub model from the
+Device Model dropdown:
+
+  Auto-Detect          Detects from hardware on connect
+  Videohub Mini 4x2    4 inputs, 2 outputs
+  Videohub Mini 6x2    6 inputs, 2 outputs
+  Videohub Mini 8x4    8 inputs, 4 outputs
+  Videohub 10x10       10 inputs, 10 outputs
+  CleanSwitch 12x12    12 inputs, 12 outputs
+  Videohub 20x20       20 inputs, 20 outputs
+  Videohub 40x40       40 inputs, 40 outputs
+  Videohub 80x80       80 inputs, 80 outputs
+
+The entire GUI rebuilds dynamically when you change models:
+matrix grid, labels panel, headers, and crosshairs all resize.
+The model selection persists across restarts.
+
+
+BONJOUR DISCOVERY
+Click Discover to find Videohubs on your local network via
+Bonjour/mDNS (_videohub._tcp). The first device found is
+auto-filled into the IP field and connected.
+
+  - Click Discover again (shows "Cancel") or press Escape
+    to stop a discovery in progress
+  - Discovery also triggers the macOS Local Network permission
+    prompt, which helps avoid connection issues on macOS 15
+
+
+AUTO-CONNECT
+If you've connected before, the app automatically connects on
+launch using the saved IP address. No clicks needed.
 
 
 LCD DISPLAY
-The center of the title bar features a simulated LCD display
-that mirrors the information shown on the Videohub hardware's
-built-in screen.
+The center of the title bar shows a simulated LCD display:
 
 When idle:
-  Shows "VIDEOHUB 10x10 12G" and "No route selected"
+  Shows the connected model name and "No route selected"
 
 When a route is selected:
   Top row:    Source number and label name
   Bottom row: Destination number and label name
 
-  Example:
-    02 | SRC     Camera 1
-    -------------------------
-    01 | DEST    Monitor A
+When hovering over the matrix:
+  Right side shows the crosshair position in yellow:
+    IN: 5
+    OUT: 3
 
-The LCD updates live when you:
-  - Click a crosspoint cell in the matrix
-  - Recall a preset (via button, hotkey, or click)
-  - Rename an input or output label
-
-The display font size is adjustable in Settings.
+The LCD updates live when you click, hover, recall a preset,
+or rename a label. Font size is adjustable in Settings.
 
 
 CROSSPOINT MATRIX
-The 10x10 grid represents all possible input-to-output routes.
+The grid represents all possible input-to-output routes.
 
-  Columns = Inputs (IN 1 through IN 10)
-  Rows    = Outputs (OUT 1 through OUT 10)
+  Columns = Inputs    Rows = Outputs
+  Yellow = active route    Dark = inactive route
 
-  Yellow dot = active route (that input feeds that output)
-  Dark cell  = inactive route
+  10x10 and under: "IN 1" / "OUT 1" headers with grid lines
+  Over 10: Number-only headers with "IN" / "OUT" corner markers
+  Over 12x12: Scrollable matrix with scrollbars
 
 To change a route:
-  Click any cell in a row to route that input to that output.
-  The previous route on that output is replaced immediately.
-  The hardware LEDs update at the same time.
+  Click any cell to route that input to that output.
 
 Crosshair guides:
-  When you hover over the grid, yellow crosshair lines appear
-  showing which input column and output row you are targeting.
-  The crosshairs remain visible after clicking a cell to
-  confirm the selected route.
+  Yellow crosshair lines follow your cursor showing the
+  target input column and output row. The crosshair position
+  also shows in the LCD display. Crosshairs remain visible
+  after clicking to confirm the route.
 
 
 INPUT / OUTPUT LABELS
-The left panel shows editable names for all 10 inputs and
-10 outputs. These correspond to the labels stored on the
-Videohub hardware itself.
+The left panel shows editable names for all inputs and outputs.
+For models over 10 I/O, labels appear in two columns (IN left,
+OUT right). The panel scrolls when labels overflow.
 
 To rename:
   1. Click a label field and type the new name.
   2. Press Return/Enter to confirm, or Tab to the next field.
-  3. The name is sent to the Videohub and the LCD display
-     updates immediately.
+  3. The LCD display updates immediately.
 
-Label names are saved locally and sent to the Videohub when
-connected. They persist across app restarts.
+Labels persist across restarts and are sent to the Videohub
+when connected. Copy/paste supported (Cmd+C/V).
 
 
 PRESETS (SALVOS)
-Presets let you save and recall complete routing snapshots.
+Save and recall complete routing snapshots.
 
-  Save:   Click Save. A dialog appears to name the preset.
-          The current routing table is stored to disk.
+  Save:   Click Save, enter a name. Routing table stored to disk.
+  Recall: Select from dropdown, click Recall. Works offline too.
+          The LCD display shows the preset name when recalled.
+  Delete: Select and click Delete. Confirms before deleting.
+          Any hotkey binding is automatically cleared.
+  Rename: Right-click (or Control-click) the preset dropdown,
+          then click "Rename..." to change the preset name.
+          The hotkey binding and dropdown position are preserved.
 
-  Recall: Select a preset from the dropdown, click Recall.
-          All 10 routes are applied. The grid, LCD display,
-          and hardware LEDs update. Works offline too -
-          the grid updates locally and routes are sent to
-          hardware when connected.
+Presets are model-specific: only presets saved for the current
+I/O size appear in the dropdown. Switch to a different model
+and you see only that model's presets.
 
-  Delete: Select a preset, click Delete. A confirmation
-          dialog appears. If the preset was assigned to a
-          hotkey, the hotkey binding is also cleared.
-
-The preset dropdown shows hotkey assignments:
-  [1]  Studio A     (assigned to key 1)
-  [2]  Show Mode    (assigned to key 2)
-  Camera Setup      (no hotkey)
+The dropdown shows hotkey assignments: [1] Studio A
 
 
 HOTKEY PRESETS (1-0)
-Assign any preset to keyboard keys 1 through 0 for instant
-one-touch recall. There are 10 slots total.
+Assign presets to keys 1-0 for instant one-touch recall.
 
-Setup:
-  1. Open Settings (Cmd+,)
-  2. Under "Hotkey Presets", use the dropdown for each key
-     to select a preset (or "None" to clear)
-  3. Changes take effect immediately
+Setup (Settings > Hotkey Presets):
+  Select a preset for each key slot (1-9, 0)
 
-Using hotkeys:
-  - Press 1-9 or 0 on the keyboard to instantly recall
-    the assigned preset
-  - Click the number indicators in the matrix title area
-    for the same effect
-  - Hotkeys only work when no text field is focused.
-    Click the grid or press Escape to deactivate text fields.
+Usage:
+  - Press the number key on the keyboard
+  - Or click the number indicator in the matrix title area
 
-Hotkey indicator states (in the matrix title area):
-  Grey background   = No preset assigned
-  Yellow background  = Preset assigned, not active
-  Green background   = Preset currently active
+Indicator states:
+  Grey   = No preset assigned
+  Yellow = Preset assigned, not active
+  Green  = Preset currently active
 
-The preset dropdown and hotkey indicator update together.
-Recalling via the Recall button also highlights the
-corresponding hotkey number in green.
+Hotkeys work when no text field is focused. Click the grid
+or press Escape to deactivate text fields.
 
 
 SETTINGS (Cmd+,)
-Open from the app menu or press Cmd+, to customize:
+Press Cmd+, to open (toggles open/close). Press Escape to close.
+The Settings window floats above the main window.
+
+Device Model:
+  Select your Videohub model. GUI rebuilds dynamically.
+  Hotkey preset dropdowns update to show only presets for
+  the selected model.
 
 Font Sizes:
-  Display Font Size         Scales the LCD display and
-                            title bar height
-  Input/Output Labels       Scales the label text in the
-                            left panel
-  Grid IN/OUT Headers       Scales the IN/OUT column and
-                            row headers
+  Display Font Size       Scales LCD display and title bar
+  Input/Output Labels     Scales label text in left panel
+  Grid IN/OUT Headers     Scales grid header font and cell size
 
-  All sliders are live - changes apply instantly.
-  The window grows automatically to fit larger fonts.
+  Font sizes are saved per-model. Each device model remembers
+  its own font preferences independently.
+
+Window & Hotkey Behavior:
+  Keep on Top             Float above other apps like Resolve
+  Global Hotkeys          Keys 1-0 work even when app is not
+                          focused (requires Accessibility
+                          permission: System Settings > Privacy
+                          & Security > Accessibility)
 
 Hotkey Presets:
-  Assign presets to keys 1-0 for instant recall.
-  See "HOTKEY PRESETS" section above.
+  Assign presets to keys 1-0. Only presets for the current
+  device model appear in the dropdowns.
 
-All settings persist across app restarts.
+Reset This Device Model:
+  Erases ALL Labels, Presets, and Hotkey Bindings for the
+  currently selected model ONLY. Other device models are
+  not affected. Resets font sizes to defaults.
+
+All settings persist per-model across restarts.
+
+
+EXPORT / IMPORT SETTINGS
+File menu:
+  Export Settings (Shift+Cmd+E)  Save all config as JSON
+  Import Settings (Shift+Cmd+I)  Load config from JSON
+
+Exports include: IP address, all presets, hotkey bindings,
+font sizes, session state, device model. Use this to transfer
+settings between machines or back up your configuration.
 
 
 SESSION PERSISTENCE
-Everything is saved when you quit and restored on relaunch:
+Everything saves per-model on quit and restores on relaunch:
+  IP address, labels, routing grid, selected preset, active
+  hotkey, LCD state, font sizes, hotkey bindings, device model
 
-  - IP address
-  - Input and output labels
-  - Full routing grid state
-  - Selected preset in dropdown
-  - Active hotkey (green indicator)
-  - LCD display state
-  - All font size settings
-  - All hotkey bindings
+Each device model has its own independent session. Switching
+from 10x10 to 20x20 saves the 10x10 state and loads the 20x20
+state. Switching back restores exactly where you left off.
 
-All data is stored in:
+Config stored at:
   /Users/Shared/Videohub Controller/videohub_controller.json
+  (shared by all users on the Mac)
 
 
 CONNECTION STATUS
-The top-right corner shows connection state:
-
   Red dot + "Disconnected"  = not connected
   Green dot + "Connected"   = active TCP connection
 
-The connection is bidirectional:
-  - Commands you send (route changes, label edits) go to
-    the Videohub immediately.
-  - Changes made on the hardware (front panel buttons,
-    other software clients) are received and reflected in
-    the GUI automatically.
+The connection is bidirectional: your changes go to the hardware
+instantly, and hardware changes are reflected in the GUI.
 
-If the connection drops (cable pulled, Videohub rebooted),
-the status updates to Disconnected. Click Connect to
-reconnect.
-
-
-RESIZING AND FULL SCREEN
-The window is fully resizable:
-  - Labels panel stays pinned to the left
-  - Matrix cells stay square at all sizes
-  - The window grows automatically when the display font
-    size increases
-
-Full screen mode: Press Cmd+F or use View > Enter Full Screen.
-The entire layout scales to fill the screen.
-
-The minimum window width is 900 pixels.
+The app auto-retries (3 attempts, 1-second delays) on connection
+failure.
 
 
 MENU BAR
 
-App menu (Videohub Controller):
-  About               About window
-  Settings... (Cmd+,) Font sizes and hotkey bindings
-  Hide (Cmd+H)        Hide the application
-  Hide Others         Hide all other applications
-  Show All            Show all hidden applications
-  Quit (Cmd+Q)        Quit the application
+App menu:
+  About, Settings (Cmd+,), Hide (Cmd+H), Quit (Cmd+Q)
+
+File menu:
+  Export Settings (Shift+Cmd+E)
+  Import Settings (Shift+Cmd+I)
+
+Edit menu:
+  Cut (Cmd+X), Copy (Cmd+C), Paste (Cmd+V), Select All (Cmd+A)
 
 View menu:
   Enter Full Screen (Cmd+F)
 
 Help menu:
-  Videohub Controller Help  Opens this manual
-  Export Console Log...     Saves the session log for
-                            debugging
+  Videohub Controller Help, Export Console Log
 
 
 KEYBOARD SHORTCUTS
-  Cmd+Q          Quit
-  Cmd+H          Hide
-  Cmd+F          Toggle full screen
-  Cmd+,          Open Settings
-  1-9, 0         Recall hotkey preset (when no text
-                 field is focused)
-  Return/Enter   Confirm label rename
-  Tab            Move to next label field
+  Cmd+Q            Quit
+  Cmd+H            Hide
+  Cmd+F            Toggle full screen
+  Cmd+,            Open/close Settings
+  Escape           Close Settings / cancel discovery
+  Shift+Cmd+E      Export Settings
+  Shift+Cmd+I      Import Settings
+  Cmd+C/V/X/A      Copy, paste, cut, select all
+  1-9, 0           Recall hotkey preset
+  Return/Enter     Confirm label rename
+  Tab              Next label field
+  Right-click      Rename selected preset (on preset dropdown)
+  Control-click    Same as right-click
+
+
+SUPPORTED MODELS
+  Videohub Mini 4x2 12G       4 in / 2 out
+  Videohub Mini 6x2 12G       6 in / 2 out
+  Videohub Mini 8x4 12G       8 in / 4 out
+  Videohub 10x10 12G          10 in / 10 out
+  Smart Videohub CleanSwitch   12 in / 12 out
+  Videohub 20x20 12G          20 in / 20 out
+  Videohub 40x40 12G          40 in / 40 out
+  Videohub 80x80 12G          80 in / 80 out
+
+The model is auto-detected from the hardware on connect
+(VIDEOHUB DEVICE protocol block) or manually selected in
+Settings.
 
 
 VIDEOHUB PROTOCOL
-Videohub Controller uses the Blackmagic Videohub Ethernet
-Protocol (TCP port 9990). This is the same protocol used by:
-  - Blackmagic Videohub Software
-  - Blackmagic Smart Control
-  - Third-party automation systems
-
-Multiple clients can connect simultaneously. All clients
-see the same state and receive the same updates.
-
-Supported Videohub models:
-  - Videohub 10x10 12G (primary target)
-  - Any Blackmagic Videohub with 10 or fewer I/O
-  - Larger models will work but only the first 10 I/O
-    are shown
-
-
-CONSOLE LOG
-The app captures all stdout/stderr to a timestamped log file:
-
-  ~/Library/Application Support/Videohub Controller/logs/console.log
-
-This log records:
-  - Connection events (connect, disconnect, errors)
-  - Route changes (which input routed to which output)
-  - Label renames
-  - Preset save/recall/delete actions
-  - Any errors or exceptions
-
-The log auto-rotates:
-  - Archived after 30 days
-  - Truncated to 5 MB if it exceeds 10 MB
-
-Use Help > Export Console Log... to save a copy for
-troubleshooting.
+Uses the Blackmagic Videohub Ethernet Protocol on TCP port 9990.
+Compatible with Blackmagic Videohub Software, Smart Control,
+and third-party automation systems. Multiple clients can connect
+simultaneously.
 
 
 TROUBLESHOOTING
 
 Can't connect
-  - Verify the Videohub is powered on and connected to
-    the network
-  - Check the IP address (find it in the Videohub's front
-    panel menu or your router's DHCP table)
-  - Make sure port 9990 is not blocked by a firewall
-  - Try pinging the IP from Terminal:
-      ping 192.168.1.100
-  - The app retries automatically (3 attempts, 1-second
-    delay between each) to handle transient network issues.
+  - Click Discover to find devices via Bonjour
+  - Verify the Videohub is powered on and on the network
+  - Try pinging the IP from Terminal
+  - The app retries 3 times automatically
 
-"No route to host" after updating the app
-  - macOS 15 requires Local Network permission for the app.
-    After installing a new build, macOS may silently invalidate
-    the permission even though the toggle appears ON.
-  - The app automatically opens System Settings > Privacy &
-    Security > Local Network when this happens. Just toggle
-    Videohub Controller OFF, then back ON, and click Connect
-    again.
-  - This is a known macOS 15 behavior that occurs when the
-    app binary is re-signed.
-
-Installing the app
-  - Drag the .app from the DMG to /Applications. This requires
-    an admin account on the Mac.
-  - Non-admin users: ask an admin to install it once, or run:
-      sudo cp -R "/Volumes/Videohub Controller/Videohub Controller.app" /Applications/
-  - Alternatively, drag to ~/Applications (user-only) or Desktop
-    to run without admin privileges.
-
-Connection drops frequently
-  - Check your Ethernet cable
-  - Verify the Videohub is not being power-cycled
-  - Check for IP conflicts on the network
-
-Labels don't update on hardware
-  - Labels are only sent when you press Return/Enter
-  - Verify the connection status shows green
-  - Some older Videohub firmware may have label length
-    limits
-
-Matrix doesn't reflect hardware changes
-  - The GUI updates in real time via TCP push notifications
-  - If it stops updating, the connection may have dropped -
-    check the status dot and reconnect
+"No route to host" after app update
+  - macOS 15 may invalidate Local Network permission after
+    re-signing. The app opens System Settings automatically.
+    Toggle Videohub Controller OFF then ON.
 
 Hotkeys not working
-  - Click the grid area or anywhere outside a text field
-    to deactivate text input. Number keys are passed to
-    text fields when one is focused.
-  - Verify the preset is assigned in Settings > Hotkey Presets
+  - Click the grid to deactivate text fields
+  - For Global Hotkeys: grant Accessibility permission in
+    System Settings > Privacy & Security > Accessibility
 
-App won't open (Gatekeeper warning)
-  Right-click the app and choose Open. This bypasses
-  Gatekeeper for the first launch on unsigned builds.
+Installing for non-admin users
+  - Admin must install once to /Applications, or drag to
+    ~/Applications or Desktop
+
+Large grid (40x40, 80x80) is slow
+  - Switching models takes a few seconds for large grids
+  - Scrolling 6,400 cells has inherent overhead
+  - Use full screen (Cmd+F) for more space
 
 
 FILE LOCATIONS
 /Users/Shared/Videohub Controller/videohub_controller.json
-    Presets, session state, settings, and last-used IP
+    All settings, presets, session state (shared by all users)
 
-~/Library/Application Support/Videohub Controller/
-    logs/
-        console.log         Current session log
-        console.log.old     Previous archive
+~/Library/Application Support/Videohub Controller/logs/
+    console.log         Current session log
+    console.log.old     Previous archive
 
 
 CREDITS

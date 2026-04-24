@@ -49,8 +49,11 @@ class PresetManager:
                 self.last_ip = data.get("last_ip", "")
                 self.settings = data.get("settings", {})
                 self.session = data.get("session", {})
-            except Exception:
-                pass
+                print(f"[presets] Loaded config: {len(self.presets)} presets, ip={self.last_ip}, model={self.settings.get('device_model', 'Auto-Detect')}")
+            except Exception as e:
+                print(f"[presets] Failed to load config: {e}")
+        else:
+            print(f"[presets] No config file found at {CONFIG_PATH}")
 
     def _write(self) -> None:
         data = {
@@ -63,12 +66,18 @@ class PresetManager:
             _SHARED_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        CONFIG_PATH.write_text(json.dumps(data, indent=2))
+        try:
+            CONFIG_PATH.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            print(f"[presets] Failed to write config: {e}")
 
     def save_session(self, routing: list, input_labels: list, output_labels: list,
                      selected_preset: str = "", lcd_output: int | None = None,
-                     active_hotkey: str | None = None) -> None:
-        self.session = {
+                     active_hotkey: str | None = None,
+                     num_inputs: int = 10, num_outputs: int = 10,
+                     font_sizes: dict | None = None) -> None:
+        model_key = f"{num_inputs}x{num_outputs}"
+        model_data = {
             "routing": list(routing),
             "input_labels": list(input_labels),
             "output_labels": list(output_labels),
@@ -76,9 +85,28 @@ class PresetManager:
             "lcd_output": lcd_output,
             "active_hotkey": active_hotkey,
         }
+        if font_sizes:
+            model_data["font_sizes"] = font_sizes
+        # Store per-model session state
+        if not isinstance(self.session, dict) or "models" not in self.session:
+            # Migrate old flat session to per-model format
+            self.session = {"models": {}}
+        self.session["models"][model_key] = model_data
+        self.session["current_model"] = model_key
         self._write()
 
-    def get_session(self) -> dict:
+    def get_session(self, num_inputs: int = None, num_outputs: int = None) -> dict:
+        """Get session state for a specific model, or the current model."""
+        if not isinstance(self.session, dict):
+            return {}
+        # Per-model session
+        if "models" in self.session:
+            if num_inputs is not None and num_outputs is not None:
+                key = f"{num_inputs}x{num_outputs}"
+            else:
+                key = self.session.get("current_model", "10x10")
+            return dict(self.session.get("models", {}).get(key, {}))
+        # Legacy flat session — treat as 10x10
         return dict(self.session)
 
     def save_ip(self, ip: str) -> None:

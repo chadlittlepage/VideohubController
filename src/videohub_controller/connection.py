@@ -200,7 +200,8 @@ class VideohubConnection:
                 while "\n\n" in buf:
                     block, buf = buf.split("\n\n", 1)
                     self._parse_block(block.strip())
-            except Exception:
+            except Exception as e:
+                print(f"[connection] Receive loop error: {e}")
                 break
         self.connected = False
         if self.on_disconnect:
@@ -300,8 +301,8 @@ class VideohubConnection:
         cmd = f"VIDEO OUTPUT ROUTING:\n{output_idx} {input_idx}\n\n"
         try:
             self.sock.sendall(cmd.encode("utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[connection] Send route failed: {e}")
 
     def set_input_label(self, idx: int, label: str) -> None:
         with self.lock:
@@ -311,8 +312,8 @@ class VideohubConnection:
         cmd = f"INPUT LABELS:\n{idx} {label}\n\n"
         try:
             self.sock.sendall(cmd.encode("utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[connection] Send input label failed: {e}")
 
     def set_output_label(self, idx: int, label: str) -> None:
         with self.lock:
@@ -322,5 +323,5 @@ class VideohubConnection:
         cmd = f"OUTPUT LABELS:\n{idx} {label}\n\n"
         try:
             self.sock.sendall(cmd.encode("utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[connection] Send output label failed: {e}")

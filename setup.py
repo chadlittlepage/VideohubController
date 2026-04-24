@@ -36,7 +36,7 @@ OPTIONS = {
         "CFBundleShortVersionString": APP_VERSION,
         "NSHumanReadableCopyright": "2026 Chad Littlepage",
         "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "15.0",
+        "LSMinimumSystemVersion": "14.0",
         "NSLocalNetworkUsageDescription":
             "Videohub Controller connects to your Blackmagic Videohub "
             "router on the local network to control video routing.",
