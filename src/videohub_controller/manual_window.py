@@ -57,19 +57,29 @@ For manual connection:
 
 
 AUTO-DISCOVERY
-On launch, the app automatically browses for Videohubs using
-Bonjour/mDNS (_videohub._tcp). If a single device is found,
-it connects automatically. If multiple devices are found, the
-Device dropdown populates and the last-used device is selected.
+On launch, the app browses for Videohubs using Bonjour/mDNS
+(_videohub._tcp) on every active network interface — including
+direct-connected interfaces using link-local 169.254/16 addresses.
+If a single device is found, it connects automatically. If
+multiple devices are found, the Device dropdown populates and
+the last-used device is selected.
 
-The Discover button performs a deeper search:
-  1. Bonjour browse (finds all advertising devices)
-  2. Port 9990 scan on local subnets (finds non-Bonjour devices)
+Discovered devices persist across quit/relaunch. Once a device
+has been seen, it stays in the Device dropdown until you remove
+it, even if you've never connected to it.
+
+The Discover button performs a fresh search:
+  1. Bonjour browse for the full window (no early cutoff so
+     devices on slow / link-local interfaces aren't dropped)
+  2. ARP-table probe + parallel port-9990 scan as fallback
+     (catches non-Bonjour devices and direct-connected hubs)
   3. Falls back to the IP in the field if nothing else works
 
   - Click Discover again (shows "Cancel") or press Escape
     to stop a discovery in progress
-  - If already connected, Discover reports the current device
+  - Discover runs even when already connected; the current
+    connection stays up and any new devices are added to the
+    dropdown without auto-switching
 
 Discovery also triggers the macOS Local Network permission
 prompt, which helps avoid connection issues on macOS 15+.
@@ -83,7 +93,8 @@ identical models (e.g., two Mini 8x4s) are tracked separately.
 Selecting a device:
   Click the Device dropdown to switch between Videohubs.
   Switching saves the current device's state, disconnects,
-  loads the new device's state, and connects.
+  loads the new device's state, and connects. The Settings
+  window stays open across the switch and updates in place.
 
 Custom device names:
   Right-click (or Control-click) the Device dropdown and

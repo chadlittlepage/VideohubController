@@ -94,6 +94,15 @@ echo "==> Stapling notarization ticket..."
 xcrun stapler staple "${APP_PATH}"
 xcrun stapler validate "${APP_PATH}"
 
+# Hard gate: the staple writes Contents/CodeResources. If it's missing, abort
+# before building the DMG -- otherwise we'd ship an unstapled .app and macOS 15
+# Gatekeeper will refuse to launch it ("can't be opened").
+if [[ ! -f "${APP_PATH}/Contents/CodeResources" ]]; then
+    echo "ERROR: ${APP_PATH}/Contents/CodeResources missing after staple."
+    echo "       The notarization ticket did not land. Refusing to build DMG."
+    exit 1
+fi
+
 rm -f "${ZIP_PATH}"
 
 # ----- 5. Build the DMG ----------------------------------------------------
@@ -117,6 +126,21 @@ else
     hdiutil create -volname "${DMG_NAME}" -srcfolder "${APP_PATH}" \
         -ov -format UDZO "${DMG_PATH}"
 fi
+
+# Verify the .app inside the DMG actually carries the staple ticket. dmgbuild
+# has been observed to omit Contents/CodeResources in some configurations,
+# which produces a DMG that passes its own Gatekeeper check but ships a broken
+# unstapled .app inside.
+echo "==> Verifying .app inside DMG is stapled..."
+_VERIFY_MNT="$(mktemp -d)/vhc_verify"
+mkdir -p "${_VERIFY_MNT}"
+hdiutil attach "${DMG_PATH}" -nobrowse -mountpoint "${_VERIFY_MNT}" >/dev/null
+if ! xcrun stapler validate "${_VERIFY_MNT}/${APP_NAME}.app" >/dev/null 2>&1; then
+    hdiutil detach "${_VERIFY_MNT}" >/dev/null || true
+    echo "ERROR: .app inside DMG is NOT stapled. Aborting before DMG signing."
+    exit 1
+fi
+hdiutil detach "${_VERIFY_MNT}" >/dev/null
 
 # ----- 6. Sign + notarize the DMG ------------------------------------------
 

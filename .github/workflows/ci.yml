@@ -32,3 +32,20 @@ jobs:
              python -m py_compile src/videohub_controller/about_window.py &&
              python -m py_compile src/videohub_controller/console_log.py &&
              echo "All files compile OK"
+
+  test:
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pytest pyobjc-core pyobjc-framework-Cocoa
+
+      - name: Run tests
+        run: PYTHONPATH=src python -m pytest tests/ -v

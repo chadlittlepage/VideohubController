@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videohub-controller"
-version = "0.5.0"
+version = "0.5.1"
 description = "Videohub Controller - Blackmagic Videohub 10x10 routing GUI"
 authors = [{name = "Chad Littlepage", email = "chad.littlepage@gmail.com"}]
 requires-python = ">=3.12"

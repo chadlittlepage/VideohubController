@@ -240,8 +240,53 @@ class PresetManager:
         return True
 
     def get_known_devices(self) -> dict:
-        """Return the devices dict {unique_id: {friendly_name, model_name, ip, ...}}."""
-        return dict(self.devices)
+        """Return a deep copy of the devices dict so callers cannot mutate
+        the registry by accident. Shape: {unique_id: {friendly_name,
+        model_name, ip, ...}}."""
+        import copy
+        return copy.deepcopy(self.devices)
+
+    def register_device_metadata(self, unique_id: str, model_name: str = "",
+                                 friendly_name: str = "", ip: str = "",
+                                 num_inputs: int = 10, num_outputs: int = 10) -> bool:
+        """Register a discovered device's metadata in the registry without
+        touching its presets/settings/session. Used so devices found via
+        Bonjour persist across app launches even if the user never connects
+        to them. Updates the IP/model on an existing entry; creates a fresh
+        empty entry if unknown. Returns True if anything changed."""
+        if not unique_id:
+            return False
+        existing = self.devices.get(unique_id)
+        if existing is None:
+            self.devices[unique_id] = {
+                "friendly_name": friendly_name or model_name,
+                "model_name": model_name,
+                "ip": ip,
+                "num_inputs": num_inputs,
+                "num_outputs": num_outputs,
+                "presets": {},
+                "settings": {},
+                "session": {},
+            }
+            self._write()
+            print(f"[presets] Registered new device: {unique_id} ({model_name})")
+            return True
+        changed = False
+        if model_name and existing.get("model_name") != model_name:
+            existing["model_name"] = model_name
+            changed = True
+        if ip and existing.get("ip") != ip:
+            existing["ip"] = ip
+            changed = True
+        if num_inputs and existing.get("num_inputs") != num_inputs:
+            existing["num_inputs"] = num_inputs
+            changed = True
+        if num_outputs and existing.get("num_outputs") != num_outputs:
+            existing["num_outputs"] = num_outputs
+            changed = True
+        if changed:
+            self._write()
+        return changed
 
     def get_last_device_id(self) -> str:
         return self.last_device_id

@@ -30,19 +30,13 @@ VIDEOHUB_MODELS = {
 MODEL_NAMES = list(VIDEOHUB_MODELS.keys())
 
 
-def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
-    """Scan all local subnets for devices listening on port 9990.
-
-    This is the fallback when Bonjour finds nothing — it probes every
-    IP on each active interface's subnet with a fast TCP connect.
-    Returns a list of dicts: [{"name": "Videohub", "host": "...", "port": 9990}, ...]
-    """
+def _enumerate_local_ipv4() -> list[tuple]:
+    """Return list of (local_ip, subnet) pairs for every active IPv4 interface,
+    excluding loopback. Tries netifaces first, then falls back to parsing
+    `ifconfig`."""
     import ipaddress
 
-    results = []
-
-    # Get all active IPv4 interfaces and their subnets
-    subnets = set()
+    pairs: list[tuple[str, ipaddress.IPv4Network]] = []
     try:
         import netifaces
         for iface in netifaces.interfaces():
@@ -50,156 +44,310 @@ def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
             for info in addrs.get(netifaces.AF_INET, []):
                 ip = info.get("addr", "")
                 mask = info.get("netmask", "")
-                if ip.startswith("127."):
+                if not ip or ip.startswith("127."):
                     continue
                 try:
                     net = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
-                    subnets.add(net)
+                    pairs.append((ip, net))
                 except Exception:
                     pass
+        return pairs
     except ImportError:
-        # netifaces not available — parse ifconfig output
-        import subprocess
-        try:
-            out = subprocess.check_output(["ifconfig"], text=True)
-            for line in out.splitlines():
-                if "inet " in line and "127.0.0.1" not in line:
-                    parts = line.split()
-                    ip_idx = parts.index("inet") + 1
-                    mask_idx = parts.index("netmask") + 1 if "netmask" in parts else -1
-                    if ip_idx < len(parts) and mask_idx > 0 and mask_idx < len(parts):
-                        ip = parts[ip_idx]
-                        mask_hex = parts[mask_idx]
-                        try:
-                            mask_int = int(mask_hex, 16)
-                            mask_str = str(ipaddress.IPv4Address(mask_int))
-                            net = ipaddress.IPv4Network(f"{ip}/{mask_str}", strict=False)
-                            subnets.add(net)
-                        except Exception:
-                            pass
-        except Exception as e:
-            print(f"[discovery] Failed to enumerate interfaces: {e}")
+        pass
 
-    if not subnets:
+    import subprocess
+    try:
+        out = subprocess.check_output(["ifconfig"], text=True)
+        for line in out.splitlines():
+            if "inet " not in line or "127.0.0.1" in line:
+                continue
+            parts = line.split()
+            try:
+                ip_idx = parts.index("inet") + 1
+                ip = parts[ip_idx]
+                mask_idx = parts.index("netmask") + 1 if "netmask" in parts else -1
+                if mask_idx <= 0:
+                    continue
+                mask_hex = parts[mask_idx]
+                mask_int = int(mask_hex, 16)
+                mask_str = str(ipaddress.IPv4Address(mask_int))
+                net = ipaddress.IPv4Network(f"{ip}/{mask_str}", strict=False)
+                pairs.append((ip, net))
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[discovery] Failed to enumerate interfaces: {e}")
+    return pairs
+
+
+def _arp_known_ipv4_neighbors() -> list[str]:
+    """Parse the kernel ARP table and return all IPv4 neighbor IPs that have
+    a resolved MAC (skip 'incomplete' entries). Catches direct-connected gear
+    on any interface — including Videohubs on link-local 169.254/16 — without
+    needing to scan a full /16."""
+    import subprocess
+    import re
+
+    ips: list[str] = []
+    try:
+        out = subprocess.check_output(["arp", "-an"], text=True, timeout=2.0)
+    except Exception as e:
+        print(f"[discovery] arp -an failed: {e}")
+        return ips
+
+    # Format: "? (169.254.125.9) at 60:d0:39:9c:e9:c6 on en14 [ethernet]"
+    pat = re.compile(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]+)\s")
+    for line in out.splitlines():
+        m = pat.search(line)
+        if not m:
+            continue
+        ip = m.group(1)
+        mac = m.group(2)
+        if mac == "(incomplete)" or "incomplete" in line.lower():
+            continue
+        if ip.endswith(".255") or ip.endswith(".0"):
+            continue
+        ips.append(ip)
+    return ips
+
+
+def scan_port_9990(cancel_event: threading.Event = None) -> list[dict]:
+    """Scan local subnets and ARP-known neighbors for devices listening on
+    port 9990.
+
+    Strategy:
+    1. Probe every IPv4 neighbor the OS already knows about (ARP table) —
+       cheap and finds direct-connected Videohubs on link-local 169.254/16
+       regardless of which interface they came in on.
+    2. Probe each interface's subnet, narrowing subnets larger than /24 to a
+       /24 window around the local IP (so a /18 corporate subnet or /16
+       link-local subnet doesn't blow up to 65k hosts).
+
+    All probes run in parallel via ThreadPoolExecutor so a typical scan
+    completes in 1-3 seconds.
+    """
+    import ipaddress
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[dict] = []
+
+    pairs = _enumerate_local_ipv4()
+    if not pairs:
         print("[discovery] No active subnets found for port scan")
         return results
 
-    import time as _time
-    scan_start = _time.time()
-    SCAN_TIMEOUT = 15  # max seconds for entire port scan
+    # Build scan target list — start with ARP neighbors (fast hits), then add
+    # subnet sweeps narrowed to /24 around the local IP.
+    arp_ips = _arp_known_ipv4_neighbors()
+    if arp_ips:
+        print(f"[discovery] {len(arp_ips)} ARP-known neighbor(s) to probe: "
+              f"{', '.join(arp_ips[:8])}{'...' if len(arp_ips) > 8 else ''}")
 
-    for net in subnets:
-        # Skip huge subnets (>254 hosts)
-        if net.num_addresses > 256:
-            print(f"[discovery] Skipping {net} (too large: {net.num_addresses} hosts)")
+    scan_nets: list[ipaddress.IPv4Network] = []
+    for local_ip, net in pairs:
+        if net.num_addresses <= 256:
+            scan_nets.append(net)
+        else:
+            narrow = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+            print(f"[discovery] {net} too large ({net.num_addresses} hosts); "
+                  f"scanning narrowed window {narrow} around {local_ip}")
+            scan_nets.append(narrow)
+
+    own_ips = {ip for ip, _ in pairs}
+    host_strs: list[str] = []
+    seen: set[str] = set()
+    for ip in arp_ips:
+        if ip in own_ips or ip in seen:
             continue
-        print(f"[discovery] Scanning {net} for port 9990 ({net.num_addresses - 2} hosts)...")
+        seen.add(ip)
+        host_strs.append(ip)
+    for net in scan_nets:
+        for h in net.hosts():
+            s = str(h)
+            if s in own_ips or s in seen:
+                continue
+            seen.add(s)
+            host_strs.append(s)
 
-        for host in net.hosts():
-            if cancel_event and cancel_event.is_set():
-                print("[discovery] Port scan cancelled")
-                return results
-            if _time.time() - scan_start > SCAN_TIMEOUT:
-                print("[discovery] Port scan timed out (15s)")
-                return results
-            host_str = str(host)
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.15)
-                s.connect((host_str, VIDEOHUB_PORT))
-                s.close()
-                print(f"[discovery] Port 9990 open: {host_str}")
-                results.append({"name": "Videohub", "host": host_str, "port": VIDEOHUB_PORT})
-            except Exception:
-                pass
+    if not host_strs:
+        print("[discovery] No hosts to scan")
+        return results
+
+    print(f"[discovery] Port-scanning {len(host_strs)} host(s)...")
+
+    PER_HOST_TIMEOUT = 0.3
+    MAX_WORKERS = 128
+    SCAN_DEADLINE = 20
+
+    import time as _time
+    deadline = _time.time() + SCAN_DEADLINE
+
+    def _probe(host_str: str) -> str | None:
+        if cancel_event and cancel_event.is_set():
+            return None
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(PER_HOST_TIMEOUT)
+            s.connect((host_str, VIDEOHUB_PORT))
+            s.close()
+            return host_str
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(_probe, h): h for h in host_strs}
+        try:
+            for fut in as_completed(futures, timeout=SCAN_DEADLINE):
+                if cancel_event and cancel_event.is_set():
+                    print("[discovery] Port scan cancelled")
+                    break
+                if _time.time() > deadline:
+                    print("[discovery] Port scan deadline hit")
+                    break
+                hit = fut.result()
+                if hit:
+                    print(f"[discovery] Port 9990 open: {hit}")
+                    results.append({"name": "Videohub", "host": hit, "port": VIDEOHUB_PORT})
+        except Exception as e:
+            print(f"[discovery] Port scan iteration error: {e}")
 
     print(f"[discovery] Port scan complete: {len(results)} device(s) found")
     return results
 
 
-def discover_videohubs(timeout: float = 3.0, callback=None,
+_BrowseDelegate = None  # lazily-defined module-level NSObject subclass
+
+
+def _get_browse_delegate_class():
+    """Return the module-level BrowseDelegate class, defining it on first use.
+    Defining it once at module scope (not inside discover_videohubs) avoids
+    `objc.error: BrowseDelegate is overriding existing Objective-C class` on
+    repeat calls."""
+    global _BrowseDelegate
+    if _BrowseDelegate is not None:
+        return _BrowseDelegate
+
+    from Foundation import NSObject
+
+    class BrowseDelegate(NSObject):
+        def netServiceBrowser_didFindService_moreComing_(self, browser, service, more):
+            print(f"[discovery] Service found: {service.name()} (resolving...)")
+            self._pending_services.append(service)
+            self._state["resolves_outstanding"] += 1
+            service.setDelegate_(self)
+            service.resolveWithTimeout_(8.0)
+
+        def netServiceDidResolveAddress_(self, service):
+            self._state["resolves_outstanding"] = max(0, self._state["resolves_outstanding"] - 1)
+            name = str(service.name())
+            if name in self._resolved_names:
+                return
+            self._resolved_names.add(name)
+            hostname = str(service.hostName()).rstrip(".")
+            port = service.port()
+            ip = hostname
+            try:
+                addr_info = socket.getaddrinfo(hostname, port, socket.AF_INET)
+                if addr_info:
+                    ip = addr_info[0][4][0]
+                    print(f"[discovery] Resolved hostname {hostname} -> {ip}")
+            except Exception as e:
+                print(f"[discovery] DNS resolve failed for {hostname}: {e}")
+            entry = {"name": name, "host": ip, "port": port}
+            self._results.append(entry)
+            print(f"[discovery] Found: {name} at {ip}:{port}")
+            cb = self._callback
+            if cb:
+                try:
+                    cb(name, ip, port)
+                except Exception as e:
+                    print(f"[discovery] Callback error: {e}")
+
+        def netService_didNotResolve_(self, service, error):
+            self._state["resolves_outstanding"] = max(0, self._state["resolves_outstanding"] - 1)
+            print(f"[discovery] Failed to resolve {service.name()}: {error}")
+
+        def netServiceBrowser_didNotSearch_(self, browser, error):
+            print(f"[discovery] Browse error: {error}")
+
+    _BrowseDelegate = BrowseDelegate
+    return _BrowseDelegate
+
+
+def discover_videohubs(timeout: float = 5.0, callback=None,
                        cancel_event: threading.Event = None) -> list[dict]:
     """Discover Videohubs on the local network via Bonjour/mDNS.
 
-    Returns a list of dicts: [{"name": "...", "host": "...", "port": 9990}, ...]
+    Browses for `_videohub._tcp.` on every interface (default mDNSResponder
+    behavior), then waits for ALL in-flight resolves to complete before
+    returning. The browse phase runs the full `timeout`; we then drain the
+    resolve phase for up to RESOLVE_DRAIN seconds. This guarantees devices
+    that take longer to resolve their .local hostname (typical on
+    direct-connected / link-local interfaces) are not dropped.
 
     On macOS 15+, this Bonjour browse also triggers the Local Network
     permission prompt if it hasn't been granted yet, which ensures
     subsequent raw TCP connections work without the toggle issue.
 
     Args:
-        timeout: How long to browse (seconds).
+        timeout: How long to browse for new services (seconds).
         callback: Optional callable(name, host, port) called per discovery.
         cancel_event: Optional threading.Event; set it to cancel the browse early.
     """
-    from Foundation import NSObject, NSRunLoop, NSDate, NSDefaultRunLoopMode
+    from Foundation import NSRunLoop, NSDate, NSDefaultRunLoopMode
 
-    results = []
-    pending_services = []  # prevent GC of services being resolved
-
-    class BrowseDelegate(NSObject):
-        def netServiceBrowser_didFindService_moreComing_(self, browser, service, more):
-            print(f"[discovery] Service found: {service.name()} (resolving...)")
-            pending_services.append(service)  # prevent GC
-            service.setDelegate_(self)
-            service.resolveWithTimeout_(5.0)
-
-        def netServiceDidResolveAddress_(self, service):
-            name = str(service.name())
-            hostname = str(service.hostName()).rstrip(".")
-            port = service.port()
-            # Resolve .local hostname to an IP address
-            ip = hostname
-            try:
-                addr_info = socket.getaddrinfo(hostname, port, socket.AF_INET)
-                if addr_info:
-                    ip = addr_info[0][4][0]  # first IPv4 address
-                    print(f"[discovery] Resolved hostname {hostname} -> {ip}")
-            except Exception as e:
-                print(f"[discovery] DNS resolve failed for {hostname}: {e}")
-            entry = {"name": name, "host": ip, "port": port}
-            results.append(entry)
-            print(f"[discovery] Found: {name} at {ip}:{port}")
-            if callback:
-                try:
-                    callback(name, ip, port)
-                except Exception as e:
-                    print(f"[discovery] Callback error: {e}")
-
-        def netService_didNotResolve_(self, service, error):
-            print(f"[discovery] Failed to resolve {service.name()}: {error}")
-
-        def netServiceBrowser_didNotSearch_(self, browser, error):
-            print(f"[discovery] Browse error: {error}")
+    results: list[dict] = []
+    pending_services: list = []        # prevents GC of NSNetService refs being resolved
+    resolved_names: set[str] = set()   # dedupe across multiple interface advertisements
+    state = {"resolves_outstanding": 0}
 
     try:
         from AppKit import NSNetServiceBrowser
-        delegate = BrowseDelegate.alloc().init()
+        delegate_class = _get_browse_delegate_class()
+        delegate = delegate_class.alloc().init()
+        # Per-call state attached to the instance so the module-level class
+        # can be reused safely across repeat Discover clicks.
+        delegate._results = results
+        delegate._pending_services = pending_services
+        delegate._resolved_names = resolved_names
+        delegate._state = state
+        delegate._callback = callback
         browser = NSNetServiceBrowser.alloc().init()
         browser.setDelegate_(delegate)
         print(f"[discovery] Browsing for {VIDEOHUB_BONJOUR_TYPE} in local. (timeout={timeout}s)")
         browser.searchForServicesOfType_inDomain_(VIDEOHUB_BONJOUR_TYPE, "local.")
 
-        # Pump run loop until timeout or cancel.
-        # After first result, keep browsing for 1s more to find additional devices.
-        deadline = NSDate.dateWithTimeIntervalSinceNow_(timeout)
-        grace_deadline = None
-        while NSDate.date().compare_(deadline) < 0:
+        # Phase 1: full browse window. Don't shorten on first hit — Videohubs
+        # on different interfaces (LAN vs link-local direct-connect) can
+        # appear several hundred ms apart.
+        browse_deadline = NSDate.dateWithTimeIntervalSinceNow_(timeout)
+        while NSDate.date().compare_(browse_deadline) < 0:
             if cancel_event and cancel_event.is_set():
                 print("[discovery] Cancelled by user")
-                break
-            if results and grace_deadline is None:
-                # Found at least one — give 1s more for others
-                grace_deadline = NSDate.dateWithTimeIntervalSinceNow_(1.0)
-                print("[discovery] First device found, browsing 1s more for others...")
-            if grace_deadline and NSDate.date().compare_(grace_deadline) >= 0:
-                break
+                browser.stop()
+                return results
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
                 NSDefaultRunLoopMode,
                 NSDate.dateWithTimeIntervalSinceNow_(0.1),
             )
 
         browser.stop()
+
+        # Phase 2: drain pending resolves so devices that browsed late or
+        # have slow .local lookups still land in results.
+        RESOLVE_DRAIN = 8.0
+        drain_deadline = NSDate.dateWithTimeIntervalSinceNow_(RESOLVE_DRAIN)
+        while state["resolves_outstanding"] > 0 and NSDate.date().compare_(drain_deadline) < 0:
+            if cancel_event and cancel_event.is_set():
+                print("[discovery] Cancelled by user during resolve drain")
+                break
+            NSRunLoop.currentRunLoop().runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.1),
+            )
+
+        if state["resolves_outstanding"] > 0:
+            print(f"[discovery] {state['resolves_outstanding']} resolve(s) still pending after drain")
         print(f"[discovery] Browse complete: {len(results)} device(s) found")
     except Exception as e:
         print(f"[discovery] Bonjour browse failed: {e}")
@@ -296,6 +444,15 @@ class VideohubConnection:
             except Exception:
                 pass
             self.sock = None
+        # Clear identification fields so a subsequent connection to a
+        # different device cannot use stale values. Without this, the next
+        # state-update callback fires with the previous hub's unique_id and
+        # _on_device_identified() saves the new device's state under the OLD
+        # device's registry uid, corrupting both entries.
+        self.unique_id = ""
+        self.model_name = ""
+        self.friendly_name = ""
+        self.device_present = False
         if self.on_disconnect:
             self.on_disconnect()
 

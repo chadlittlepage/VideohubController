@@ -88,6 +88,37 @@ def invalidate_settings_window(controller=None):
         controller._settings_delegates = []
         controller._settings_font_sliders = {}
         controller._settings_hotkey_popups = []
+        controller._settings_model_popup = None
+        controller._settings_device_name_delegate = None
+
+
+def refresh_settings_window(controller):
+    """Update the open settings window's contents in place to reflect current
+    state (active device, presets, hotkeys, fonts, model selection). No-op if
+    the window is not currently open. Used when the user switches devices via
+    the GUI so the Settings window stays open instead of being destroyed."""
+    global _settings_window
+    if _settings_window is None or not _settings_window.isVisible():
+        return
+
+    refresh_font_sliders(controller)
+    refresh_hotkey_popups(controller)
+
+    model_popup = getattr(controller, '_settings_model_popup', None)
+    if model_popup is not None:
+        saved_model = controller.presets.settings.get("device_model", "Auto-Detect")
+        for i in range(model_popup.numberOfItems()):
+            title = str(model_popup.itemTitleAtIndex_(i))
+            if title.startswith(saved_model):
+                model_popup.selectItemAtIndex_(i)
+                break
+
+    name_del = getattr(controller, '_settings_device_name_delegate', None)
+    if name_del is not None:
+        try:
+            name_del._refresh_settings_picker()
+        except Exception as e:
+            print(f"[settings] device picker refresh failed: {e}")
 
 
 class SliderDelegate(NSObject):
@@ -212,20 +243,25 @@ class DeviceNameDelegate(NSObject):
 
     @objc.python_method
     def _refresh_settings_picker(self):
-        """Rebuild the settings device picker to reflect name changes."""
+        """Rebuild the settings device picker, selecting the controller's
+        currently-active device. Also refresh the Custom Name field to match."""
         if not self.device_popup:
             return
-        selected_idx = self.device_popup.indexOfSelectedItem()
+        prior_uid = ""
+        prior_idx = self.device_popup.indexOfSelectedItem()
+        if 0 <= prior_idx < len(self.device_uids):
+            prior_uid = self.device_uids[prior_idx]
         self.device_popup.removeAllItems()
         self.device_uids = []
         devices = self.controller.presets.get_known_devices()
+        current_uid = self.controller._current_device_id or prior_uid
+        select_idx = -1
         for uid, dev in devices.items():
             if uid == "legacy":
                 continue
             model = dev.get("model_name", "Videohub")
             ip = dev.get("ip", "")
             custom = dev.get("friendly_name", "")
-            # Format: "Model — IP" or "Model — IP — Custom Name"
             parts = [model]
             if ip:
                 parts.append(ip)
@@ -233,9 +269,25 @@ class DeviceNameDelegate(NSObject):
                 parts.append(f'"{custom}"')
             label = "  —  ".join(parts)
             self.device_popup.addItemWithTitle_(label)
+            if uid == current_uid:
+                select_idx = self.device_popup.numberOfItems() - 1
             self.device_uids.append(uid)
-        if 0 <= selected_idx < self.device_popup.numberOfItems():
-            self.device_popup.selectItemAtIndex_(selected_idx)
+        if select_idx < 0 and self.device_popup.numberOfItems() > 0:
+            select_idx = 0
+        if select_idx >= 0:
+            self.device_popup.selectItemAtIndex_(select_idx)
+
+        # Update the Custom Name field to reflect the now-selected device.
+        if hasattr(self, 'name_field') and self.name_field is not None and 0 <= select_idx < len(self.device_uids):
+            sel_uid = self.device_uids[select_idx]
+            dev = devices.get(sel_uid, {})
+            custom = dev.get("friendly_name", "")
+            model = dev.get("model_name", "")
+            if custom and custom != model:
+                self.name_field.setStringValue_(custom)
+            else:
+                self.name_field.setStringValue_("")
+            self.name_field.setPlaceholderString_(model or "e.g. Edit Suite A")
 
 
 class ModelSelectDelegate(NSObject):
@@ -341,6 +393,76 @@ class HotkeyDelegate(NSObject):
         self.controller._refresh_hotkey_indicators()
 
 
+class ResetDelegate(NSObject):
+    """Handles Reset This Device Model button. Defined at module level so
+    PyObjC doesn't throw 'overriding existing Objective-C class' on the second
+    open of the settings window (which is what made Settings appear to never
+    open again after a device switch invalidated it)."""
+
+    ctrl = objc.ivar("ctrl")
+
+    @objc.python_method
+    def initWithController_(self, c):
+        self = self.init()
+        if self:
+            self.ctrl = c
+        return self
+
+    def resetClicked_(self, sender):
+        from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
+        saved_model = self.ctrl.presets.settings.get("device_model", "Auto-Detect")
+        if saved_model == "Auto-Detect":
+            model_name = f"Videohub {self.ctrl._num_inputs}x{self.ctrl._num_outputs}"
+        else:
+            model_name = saved_model
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f'Reset "{model_name}"?')
+        alert.setInformativeText_(
+            f"This will erase ALL Labels, Presets, and Hotkey Bindings "
+            f"for {model_name}.\n\nOther device models are not affected."
+        )
+        alert.addButtonWithTitle_("Reset")
+        alert.addButtonWithTitle_("Cancel")
+        dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+        if dark:
+            alert.window().setAppearance_(dark)
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+
+        n_in = self.ctrl._num_inputs
+        n_out = self.ctrl._num_outputs
+        print(f"[settings] Resetting {model_name} ({n_in}x{n_out}) — erasing labels, presets, hotkeys")
+
+        for name in list(self.ctrl.presets.names(num_inputs=n_in, num_outputs=n_out)):
+            bindings = self.ctrl.presets.get_key_bindings()
+            for key, bound in list(bindings.items()):
+                if bound == name:
+                    self.ctrl.presets.set_key_binding(key, "")
+            self.ctrl.presets.delete(name)
+
+        self.ctrl.hub.input_labels = [f"Input {i+1}" for i in range(n_in)]
+        self.ctrl.hub.output_labels = [f"Output {i+1}" for i in range(n_out)]
+        self.ctrl.hub.routing = [0] * n_out
+        self.ctrl._active_hotkey = None
+        self.ctrl._lcd_selected_out = None
+
+        self.ctrl.presets.settings["lcd_font_size"] = DEFAULT_LCD_SIZE
+        self.ctrl.presets.settings["label_font_size"] = DEFAULT_LABEL_SIZE
+        self.ctrl.presets.settings["grid_header_font_size"] = DEFAULT_GRID_HEADER_SIZE
+
+        self.ctrl._save_session()
+        self.ctrl.refresh_labels()
+        self.ctrl.refresh_matrix()
+        self.ctrl.apply_font_settings()
+        self.ctrl._refresh_preset_popup()
+        self.ctrl._refresh_hotkey_indicators()
+        self.ctrl._update_lcd_idle()
+        refresh_hotkey_popups(self.ctrl)
+        refresh_font_sliders(self.ctrl)
+        self.ctrl.set_status(f"Reset {model_name} to defaults")
+
+
 def show_settings_window(controller):
     """Show the settings window (singleton)."""
     global _settings_window
@@ -396,6 +518,7 @@ def show_settings_window(controller):
     model_popup.setAction_(objc.selector(model_del.changed_, signature=b"v@:@"))
     delegates.append(model_del)
     cv.addSubview_(model_popup)
+    controller._settings_model_popup = model_popup
 
     # -- Device Names section --
     y -= 40
@@ -439,6 +562,7 @@ def show_settings_window(controller):
     settings_device_popup.setAction_(objc.selector(name_del.devicePickerChanged_, signature=b"v@:@"))
     delegates.append(name_del)
     cv.addSubview_(settings_device_popup)
+    controller._settings_device_name_delegate = name_del
 
     # Custom Name field
     y -= 28
@@ -602,75 +726,6 @@ def show_settings_window(controller):
     reset_btn = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 360, 28))
     reset_btn.setTitle_("Reset This Device Model...")
     reset_btn.setBezelStyle_(1)
-
-    class ResetDelegate(NSObject):
-        ctrl = objc.ivar("ctrl")
-
-        @objc.python_method
-        def initWithController_(self, c):
-            self = self.init()
-            if self:
-                self.ctrl = c
-            return self
-
-        def resetClicked_(self, sender):
-            from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
-            saved_model = self.ctrl.presets.settings.get("device_model", "Auto-Detect")
-            if saved_model == "Auto-Detect":
-                model_name = f"Videohub {self.ctrl._num_inputs}x{self.ctrl._num_outputs}"
-            else:
-                model_name = saved_model
-
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_(f'Reset "{model_name}"?')
-            alert.setInformativeText_(
-                f"This will erase ALL Labels, Presets, and Hotkey Bindings "
-                f"for {model_name}.\n\nOther device models are not affected."
-            )
-            alert.addButtonWithTitle_("Reset")
-            alert.addButtonWithTitle_("Cancel")
-            dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
-            if dark:
-                alert.window().setAppearance_(dark)
-            if alert.runModal() != NSAlertFirstButtonReturn:
-                return
-
-            n_in = self.ctrl._num_inputs
-            n_out = self.ctrl._num_outputs
-            print(f"[settings] Resetting {model_name} ({n_in}x{n_out}) — erasing labels, presets, hotkeys")
-
-            # Delete presets for this model
-            for name in list(self.ctrl.presets.names(num_inputs=n_in, num_outputs=n_out)):
-                # Clear any hotkey bindings pointing to this preset
-                bindings = self.ctrl.presets.get_key_bindings()
-                for key, bound in list(bindings.items()):
-                    if bound == name:
-                        self.ctrl.presets.set_key_binding(key, "")
-                self.ctrl.presets.delete(name)
-
-            # Reset routing and labels
-            self.ctrl.hub.input_labels = [f"Input {i+1}" for i in range(n_in)]
-            self.ctrl.hub.output_labels = [f"Output {i+1}" for i in range(n_out)]
-            self.ctrl.hub.routing = [0] * n_out
-            self.ctrl._active_hotkey = None
-            self.ctrl._lcd_selected_out = None
-
-            # Reset font sizes to defaults
-            self.ctrl.presets.settings["lcd_font_size"] = DEFAULT_LCD_SIZE
-            self.ctrl.presets.settings["label_font_size"] = DEFAULT_LABEL_SIZE
-            self.ctrl.presets.settings["grid_header_font_size"] = DEFAULT_GRID_HEADER_SIZE
-
-            # Save clean state and refresh everything
-            self.ctrl._save_session()
-            self.ctrl.refresh_labels()
-            self.ctrl.refresh_matrix()
-            self.ctrl.apply_font_settings()
-            self.ctrl._refresh_preset_popup()
-            self.ctrl._refresh_hotkey_indicators()
-            self.ctrl._update_lcd_idle()
-            refresh_hotkey_popups(self.ctrl)
-            refresh_font_sliders(self.ctrl)
-            self.ctrl.set_status(f"Reset {model_name} to defaults")
 
     reset_del = ResetDelegate.alloc().initWithController_(controller)
     reset_btn.setTarget_(reset_del)

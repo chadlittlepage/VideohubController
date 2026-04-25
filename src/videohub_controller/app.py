@@ -21,8 +21,6 @@ from AppKit import (
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
-    NSBox,
-    NSBoxSeparator,
     NSButton,
     NSCenterTextAlignment,
     NSColor,
@@ -60,6 +58,7 @@ from videohub_controller.presets import PresetManager
 from videohub_controller.settings_window import (
     show_settings_window,
     invalidate_settings_window,
+    refresh_settings_window,
     refresh_hotkey_popups,
     refresh_font_sliders,
     DEFAULT_LCD_SIZE,
@@ -452,7 +451,8 @@ class AppController(NSObject):
         self.window.setFrameAutosaveName_("VideohubControllerMain")
         # Min height: capped so large grids don't force a huge window
         min_h = HEADER_H + CONN_BAR_H + 300 + BOTTOM_BAR_H
-        self.window.setMinSize_((920, min_h))
+        cur_min_w = int(self.window.minSize().width) if self.window.minSize().width else 920
+        self.window.setMinSize_((max(920, cur_min_w), min_h))
         self.window.setBackgroundColor_(BG_DARK)
         # Force dark appearance so the app looks correct even in light mode
         from AppKit import NSAppearance
@@ -785,22 +785,24 @@ class AppController(NSObject):
         max_rows = max(num_in, num_out)
         self._labels_scroll = None
 
-        # Fixed header + content area
-        header_h = 22
+        # Fixed top header is only used for the large/two-column layout.
+        # The single-column layout puts INPUT LABELS / OUTPUT LABELS inline so
+        # each header sits directly above its own section.
+        header_h = 22 if large else 0
 
         # Remove old header/content if rebuilding
         if hasattr(self, '_labels_header_view') and self._labels_header_view:
             self._labels_header_view.removeFromSuperview()
+            self._labels_header_view = None
         if hasattr(self, '_labels_scroll_view') and self._labels_scroll_view:
             self._labels_scroll_view.removeFromSuperview()
             self._labels_scroll_view = None
 
-        # Fixed header pinned to top
-        self._labels_header_view = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, labels_h - header_h, label_panel_w, header_h)
-        )
-        self._labels_header_view.setAutoresizingMask_(8)  # pin to top
         if large:
+            self._labels_header_view = NSView.alloc().initWithFrame_(
+                NSMakeRect(0, labels_h - header_h, label_panel_w, header_h)
+            )
+            self._labels_header_view.setAutoresizingMask_(8)  # pin to top
             left_x = 4
             right_x = LABEL_COL_W // 2 + 2
             self._labels_header_view.addSubview_(
@@ -809,17 +811,14 @@ class AppController(NSObject):
             self._labels_header_view.addSubview_(
                 _label(NSMakeRect(right_x, 2, col_w, 18), "OUTPUT LABELS", size=10, bold=True, color=TEXT_DIM)
             )
-        else:
-            self._labels_header_view.addSubview_(
-                _label(NSMakeRect(10, 2, 200, 18), "INPUT / OUTPUT LABELS", size=11, bold=True, color=TEXT_DIM)
-            )
-        self.labels_bg.addSubview_(self._labels_header_view)
+            self.labels_bg.addSubview_(self._labels_header_view)
 
-        # Content height for entries
+        # Content height for entries (single-column adds inline section headers)
+        section_header_h = 22
         if large:
             entries_h = (max_rows * spacing) + 10
         else:
-            entries_h = (num_in * spacing) + 20 + (num_out * spacing) + 10
+            entries_h = section_header_h + (num_in * spacing) + 16 + section_header_h + (num_out * spacing) + 10
 
         content_area_h = labels_h - header_h
 
@@ -881,8 +880,15 @@ class AppController(NSObject):
                     self.output_entries.append(tf)
                 ly += spacing
         else:
-            # Single-column layout (top-down in flipped view)
+            # Single-column layout (top-down in flipped view) with inline
+            # section headers above each list.
             ly = 4
+            self.labels_inner.addSubview_(
+                _label(NSMakeRect(10, ly, LABEL_COL_W - 20, 18),
+                       "INPUT LABELS", size=11, bold=True, color=TEXT_DIM)
+            )
+            ly += section_header_h
+
             for i in range(num_in):
                 self.labels_inner.addSubview_(
                     _label(NSMakeRect(10, ly, 24, entry_h), f"{i+1}.", size=11, color=TEXT_DIM)
@@ -899,12 +905,13 @@ class AppController(NSObject):
                 self.input_entries.append(tf)
                 ly += spacing
 
-            ly += 10
-            sep = NSBox.alloc().initWithFrame_(NSMakeRect(12, ly, LABEL_COL_W - 24, 1))
-            sep.setBoxType_(NSBoxSeparator)
-            self.labels_inner.addSubview_(sep)
+            ly += 16
+            self.labels_inner.addSubview_(
+                _label(NSMakeRect(10, ly, LABEL_COL_W - 20, 18),
+                       "OUTPUT LABELS", size=11, bold=True, color=TEXT_DIM)
+            )
+            ly += section_header_h
 
-            ly += 10
             for i in range(num_out):
                 self.labels_inner.addSubview_(
                     _label(NSMakeRect(10, ly, 24, entry_h), f"{i+1}.", size=11, color=TEXT_DIM)
@@ -1233,22 +1240,20 @@ class AppController(NSObject):
     # -- Actions --
 
     def discoverDevices_(self, sender):
-        """Discover Videohubs on the local network via Bonjour. Toggle to cancel."""
+        """Discover Videohubs on the local network via Bonjour. Toggle to cancel.
+        Runs even when already connected — the current connection is kept and
+        any newly-found devices populate the Device dropdown."""
         if hasattr(self, '_discover_cancel') and self._discover_cancel and not self._discover_cancel.is_set():
-            # Already discovering — cancel it
             self._discover_cancel.set()
             self.discover_btn.setTitle_("Discover")
             self.set_status("Discovery cancelled.")
             return
-        if self.hub.connected:
-            model = self.hub.model_name or "Videohub"
-            ip = self.ip_field.stringValue().strip()
-            self.set_status(f"Already connected to {model} at {ip}")
-            print("[discovery] Already connected — skipping")
-            return
         self._discover_cancel = threading.Event()
         self.discover_btn.setTitle_("Cancel")
-        self.set_status("Discovering Videohubs on the network...")
+        if self.hub.connected:
+            self.set_status("Discovering additional Videohubs on the network...")
+        else:
+            self.set_status("Discovering Videohubs on the network...")
         print("[discovery] Starting Bonjour browse...")
         threading.Thread(target=self._do_discover, daemon=True).start()
 
@@ -1305,8 +1310,29 @@ class AppController(NSObject):
 
         # Cache discovered devices and refresh picker
         self._discovered_devices = devices
+        # Persist discovered devices to the registry so they remain in the
+        # dropdown across quit/reopen, even if the user never connects to them.
+        for dev in devices:
+            uid = dev.get("unique_id", "")
+            if not uid:
+                continue
+            self.presets.register_device_metadata(
+                uid,
+                model_name=dev.get("model_name", dev.get("name", "")),
+                friendly_name=dev.get("friendly_name", ""),
+                ip=dev.get("host", ""),
+                num_inputs=dev.get("num_inputs", 10),
+                num_outputs=dev.get("num_outputs", 10),
+            )
         self._refresh_device_popup()
         print(f"[discovery] Found {len(devices)} device(s)")
+
+        # If already connected, keep that connection — just surface the new
+        # devices in the dropdown without auto-switching.
+        if self.hub.connected:
+            names = [d.get("model_name", d.get("name", "?")) for d in devices]
+            self.set_status(f"Found {len(devices)} device(s): {', '.join(names)}")
+            return
 
         if len(devices) == 1:
             # Single device — auto-connect
@@ -1803,7 +1829,16 @@ class AppController(NSObject):
 
     @objc.python_method
     def _update_lcd_idle(self):
-        """Set the LCD to its idle/disconnected state."""
+        """Set the LCD display. When connected and routing is known, default
+        to showing OUT 1's route; only fall back to model/idle text when
+        disconnected and no routing is available."""
+        if self.hub.connected and self._num_outputs > 0:
+            with self.hub.lock:
+                has_routing = len(self.hub.routing) > 0
+            if has_routing:
+                self._update_lcd(0)
+                return
+
         self._lcd_idle = True
         saved_model = self.presets.settings.get("device_model", "Auto-Detect")
         model = self.hub.model_name or (saved_model if saved_model != "Auto-Detect" else f"Videohub {self._num_inputs}x{self._num_outputs}")
@@ -1987,7 +2022,8 @@ class AppController(NSObject):
 
         # Update minimum window height
         min_h = header_h + CONN_BAR_H + 300 + BOTTOM_BAR_H
-        self.window.setMinSize_((920, min_h))
+        cur_min_w = int(self.window.minSize().width) if self.window.minSize().width else 920
+        self.window.setMinSize_((max(920, cur_min_w), min_h))
 
         # Grow the window if it's now smaller than the minimum
         win_frame = self.window.frame()
@@ -2271,18 +2307,10 @@ class AppController(NSObject):
                 self.preset_popup.selectItemAtIndex_(i)
                 break
 
-        # Show preset name in LCD
-        self._lcd_idle = True
-        saved_model = self.presets.settings.get("device_model", "Auto-Detect")
-        model = self.hub.model_name or (saved_model if saved_model != "Auto-Detect" else f"Videohub {self._num_inputs}x{self._num_outputs}")
-        self.lcd_src_header.setStringValue_("")
-        self.lcd_src_name.setStringValue_(model)
-        self.lcd_src_name.setAlignment_(NSCenterTextAlignment)
-        self.lcd_dest_header.setStringValue_("")
-        self.lcd_dest_name.setStringValue_(f"Preset: {name}")
-        self.lcd_dest_name.setAlignment_(NSCenterTextAlignment)
-        if hasattr(self, 'conn_bg'):
-            self._layout_lcd_internals()
+        # Refresh LCD to reflect the newly recalled route (no preset banner).
+        # Default to OUT 1 if the user hasn't manually selected an output.
+        out_to_show = self._lcd_selected_out if self._lcd_selected_out is not None else 0
+        self._update_lcd(out_to_show)
 
         # Send to hardware if connected
         if self.hub.connected:
@@ -2457,32 +2485,41 @@ class AppController(NSObject):
         """Rebuild the device picker dropdown from known + discovered devices."""
         self.device_popup.removeAllItems()
 
-        # Merge known devices with discovered devices, deduplicate by unique_id and IP
-        all_devices = {}
-        known_ips = set()
+        # Merge known devices with discovered devices. Dedupe by unique_id
+        # first, then by IP. Track which IPs are already in the list so a
+        # discovered duplicate of a saved device cannot double-add itself.
+        all_devices: dict = {}
+        ip_to_key: dict = {}
         for uid, dev in self.presets.get_known_devices().items():
             if uid == "legacy":
                 continue
             all_devices[uid] = dev
             ip = dev.get("ip", "")
             if ip:
-                known_ips.add(ip)
+                ip_to_key[ip] = uid
+
         for dev in self._discovered_devices:
             uid = dev.get("unique_id", "")
             ip = dev.get("host", "")
-            # Skip if already known by unique_id or IP
             if uid and uid in all_devices:
+                # Refresh the IP on the saved entry in case the device moved
+                if ip:
+                    all_devices[uid]["ip"] = ip
                 continue
-            if ip and ip in known_ips:
+            if ip and ip in ip_to_key:
+                # Same physical device under a different/missing unique_id
                 continue
             key = uid or ip
-            if key:
-                all_devices[key] = {
-                    "friendly_name": dev.get("friendly_name", ""),
-                    "model_name": dev.get("name", dev.get("model_name", "Videohub")),
-                    "ip": ip,
-                    "unique_id": uid,
-                }
+            if not key:
+                continue
+            all_devices[key] = {
+                "friendly_name": dev.get("friendly_name", ""),
+                "model_name": dev.get("name", dev.get("model_name", "Videohub")),
+                "ip": ip,
+                "unique_id": uid,
+            }
+            if ip:
+                ip_to_key[ip] = key
 
         self._device_popup_ids = []
         self._device_short_names = []
@@ -2543,7 +2580,8 @@ class AppController(NSObject):
 
     @objc.python_method
     def _resize_device_popup(self):
-        """Resize device popup width to fit the current title."""
+        """Resize device popup to fit its title and widen the window minimum so
+        it can never overlap the left-side Discover button."""
         idx = self.device_popup.indexOfSelectedItem()
         if 0 <= idx < len(self._device_short_names):
             title = self._device_short_names[idx]
@@ -2559,6 +2597,27 @@ class AppController(NSObject):
         f.origin.x = right_edge - new_w
         f.size.width = new_w
         self.device_popup.setFrame_(f)
+
+        # Left-side controls end at x=360 (IP label+field+Connect+Discover).
+        # Right-side stack from the right edge: 12 (pad) + 65 (Delete) + 5 +
+        # 58 (Save) + 5 + 65 (Recall) + 5 + 150 (preset popup) + 5 = 370 fixed.
+        # Add a 20 px safety gap between Discover and the device popup.
+        LEFT_END = 360
+        SAFETY_GAP = 20
+        RIGHT_FIXED_W = 370
+        required_min_w = LEFT_END + SAFETY_GAP + new_w + RIGHT_FIXED_W
+
+        cur_min = self.window.minSize()
+        new_min_w = max(int(cur_min.width), required_min_w, 920)
+        if new_min_w != int(cur_min.width):
+            self.window.setMinSize_((new_min_w, cur_min.height))
+
+        win_frame = self.window.frame()
+        if win_frame.size.width < new_min_w:
+            self.window.setFrame_display_(
+                NSMakeRect(win_frame.origin.x, win_frame.origin.y, new_min_w, win_frame.size.height),
+                True,
+            )
 
     def renameDeviceFromMenu_(self, sender):
         """Rename the selected device (triggered from right-click context menu)."""
@@ -2669,7 +2728,9 @@ class AppController(NSObject):
             self.hub.output_labels = [f"Output {i+1}" for i in range(num_out)]
             self.hub.routing = [0] * num_out
             self._rebuild_io(num_in, num_out)
-            invalidate_settings_window(self)
+            # Refresh the open Settings window in place — switching devices
+            # via the GUI must NEVER close Settings.
+            refresh_settings_window(self)
 
         # Connect to new device
         self.ip_field.setStringValue_(ip)
@@ -2681,6 +2742,15 @@ class AppController(NSObject):
     def _on_device_identified(self, unique_id):
         """Called once per connection when VIDEOHUB DEVICE block provides unique_id."""
         if self._device_identified:
+            return
+        # Defense in depth: refuse to proceed without a real unique_id, and
+        # require the hub's parsed fields (model_name, num_inputs/outputs)
+        # to also match this uid before we trust it. Otherwise a stale value
+        # leftover from a prior connection could write the wrong device's
+        # data into the registry.
+        if not unique_id or not self.hub.model_name:
+            return
+        if unique_id != self.hub.unique_id:
             return
         self._device_identified = True
 
@@ -2698,16 +2768,13 @@ class AppController(NSObject):
                 num_outputs=self.hub.num_outputs,
             )
         elif old_id != unique_id:
-            # Connected to a different device than expected — save old, load new
-            if old_id:
-                self.presets.save_device_state(
-                    old_id,
-                    friendly_name="",
-                    model_name=self.presets.settings.get("device_model", ""),
-                    ip="",
-                    num_inputs=self._num_inputs,
-                    num_outputs=self._num_outputs,
-                )
+            # Connected to a physically different device than expected (e.g.
+            # DHCP shuffled IPs, or the user typed an IP that pointed to a
+            # different hub). Do NOT touch the old device's registry entry —
+            # its model/name/IO are still valid for that device, and the
+            # previous code clobbered them with the new device's IO and an
+            # empty model name. Just switch to the actual device and let the
+            # save_device_state() call below record its state.
             loaded = self.presets.load_device_state(unique_id)
             if loaded:
                 self._restore_session()
@@ -2734,7 +2801,9 @@ class AppController(NSObject):
                 break
         self.presets.set_last_device_id(unique_id)
         self._refresh_device_popup()
-        invalidate_settings_window(self)
+        # Refresh in place — never close the user's Settings window from this
+        # async post-connect path either.
+        refresh_settings_window(self)
         print(f"[device] Identified: {self.hub.model_name} ({self.hub.friendly_name}) id={unique_id}")
 
 

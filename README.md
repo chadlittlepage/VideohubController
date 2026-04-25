@@ -9,13 +9,13 @@ Native macOS routing control application for Blackmagic Videohub SDI routers. Su
 ## Features
 
 - **All Videohub models** -- dynamic I/O from Mini 4x2 up to 80x80 (6,400 crosspoints); GUI rebuilds automatically when you switch models
-- **Auto-discovery** -- finds Videohubs on your network via Bonjour on launch and connects automatically; no manual IP entry needed
+- **Auto-discovery on every interface** -- Bonjour browse on launch finds Videohubs across your LAN and direct-connected (link-local 169.254/16) interfaces; discovered devices persist across quit/relaunch
 - **Multi-device management** -- Device dropdown in the toolbar lists all known Videohubs; switch between devices with one click; each device saves its own config independently
 - **Custom device names** -- right-click the Device dropdown or use Settings to give each Videohub a custom name (e.g., "Edit Suite A"); names persist across restarts
 - **Per-device storage** -- presets, hotkey bindings, labels, font sizes, and session state are stored per hardware Unique ID; two identical models get separate configs
 - **Hardware-style LCD display** -- simulated display in the title bar shows source/destination labels, hover position in yellow, and preset name on recall
 - **Crosspoint matrix** -- click any cell to route an input to an output instantly; yellow crosshair guides follow your cursor; scrollable for grids larger than 12x12
-- **Bonjour + port scan discovery** -- Discover button runs Bonjour browse, then falls back to scanning port 9990 on local subnets for non-Bonjour devices
+- **Bonjour + ARP + port scan discovery** -- Discover runs the full Bonjour window (no early cutoff), then probes ARP-known neighbors and parallel-scans port 9990 on local subnets to catch direct-connected and non-Bonjour devices
 - **Bidirectional hardware sync** -- routes set in the GUI update the hardware; changes made on the front panel are reflected back in real time
 - **Editable labels** -- rename any input or output; names are sent to the Videohub when connected and persist per-device across restarts
 - **Preset (salvo) save and recall** -- snapshot the full routing table to disk, then recall with a single click or hotkey; presets are per-device
@@ -176,9 +176,10 @@ Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicat
 - The last-used device is auto-selected on launch
 - Each device is identified by its hardware Unique ID
 
-**"Items had to be skipped" when installing**
-- Dragging to /Applications requires an admin account
-- Or drag to ~/Applications or Desktop instead
+**"Items had to be skipped" / "Videohub Controller can't be opened"**
+- Make sure you have the latest DMG from Releases. Some earlier DMGs shipped an unstapled .app — macOS 15 Gatekeeper rejects those without a network round-trip.
+- If you already have a half-installed copy, drag `/Applications/Videohub Controller.app` to the Trash and reinstall from a fresh download.
+- Quit any running copy of Videohub Controller before dragging a new one over the existing install.
 
 ## Videohub Protocol
 
