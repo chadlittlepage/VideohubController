@@ -116,6 +116,248 @@ def prime_local_network_permission() -> None:
           "in System Settings → Privacy & Security → Local Network")
 
 
+# ---------------------------------------------------------------------------
+# Transport abstraction
+# ---------------------------------------------------------------------------
+# VideohubConnection used to talk POSIX sockets directly. POSIX TCP to a
+# private IP is gated by macOS 15's per-user Local Network permission, which
+# is what blocks non-admin users even though Bonjour discovery succeeds.
+#
+# We now have two transports:
+#   _SocketTransport   — original raw TCP. Used when the user types an IP
+#                        manually (no NSNetService available).
+#   _NSStreamTransport — opens the connection via Apple's NSNetService
+#                        getInputStream:outputStream: API. Apple's brokered
+#                        Bonjour path may bypass the per-user Local Network
+#                        gate (Sequoia tightened this; not 100% guaranteed
+#                        but worth attempting for the standard-user case).
+#
+# Both transports expose the same minimal API:
+#   start(on_data: callable(bytes), on_close: callable())
+#   send(data: bytes)
+#   close()
+# and run the inbound read loop on whatever thread/run-loop they prefer.
+# ---------------------------------------------------------------------------
+
+
+class _SocketTransport:
+    """Raw POSIX TCP transport. Requires Local Network permission on macOS 15+."""
+
+    def __init__(self):
+        self._sock: socket.socket | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._on_data = None
+        self._on_close = None
+
+    def open(self, ip: str, port: int = VIDEOHUB_PORT, timeout: float = 5.0) -> None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((ip, port))
+        s.settimeout(None)
+        self._sock = s
+
+    def start(self, on_data, on_close) -> None:
+        self._on_data = on_data
+        self._on_close = on_close
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def send(self, data: bytes) -> None:
+        if not self._sock:
+            raise IOError("Socket transport not open")
+        self._sock.sendall(data)
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+    def _loop(self) -> None:
+        print("[transport-sock] read loop started")
+        while not self._stop.is_set():
+            try:
+                data = self._sock.recv(4096)
+                if not data:
+                    print("[transport-sock] remote closed")
+                    break
+                if self._on_data:
+                    self._on_data(data)
+            except Exception as e:
+                print(f"[transport-sock] read error: {e}")
+                break
+        print("[transport-sock] read loop ended")
+        if self._on_close:
+            try:
+                self._on_close()
+            except Exception:
+                pass
+
+
+_StreamDelegate = None  # lazily-defined module-level NSObject subclass
+
+
+def _get_stream_delegate_class():
+    """Module-level NSStream delegate factory. Defining inside a function
+    crashes PyObjC on the second instantiation (same trap as BrowseDelegate /
+    ResetDelegate)."""
+    global _StreamDelegate
+    if _StreamDelegate is not None:
+        return _StreamDelegate
+
+    from Foundation import NSObject
+
+    NSStreamEventOpenCompleted = 1 << 0  # 1
+    NSStreamEventHasBytesAvailable = 1 << 1  # 2
+    NSStreamEventErrorOccurred = 1 << 3  # 8
+    NSStreamEventEndEncountered = 1 << 4  # 16
+
+    class StreamDelegate(NSObject):
+        def stream_handleEvent_(self, stream, event):
+            transport = self._transport
+            if transport is None:
+                return
+            if event == NSStreamEventOpenCompleted:
+                pass
+            elif event == NSStreamEventHasBytesAvailable:
+                # Drain everything available in this event
+                buf = bytearray(8192)
+                # NSInputStream.read:maxLength: -> (bytesRead, buffer)
+                try:
+                    n, data = stream.read_maxLength_(None, 8192)
+                except TypeError:
+                    # Older PyObjC signature variant
+                    n = stream.read_maxLength_(buf, 8192)
+                    data = bytes(buf[:n]) if n > 0 else b""
+                if n > 0:
+                    if not isinstance(data, (bytes, bytearray)):
+                        try:
+                            data = bytes(data)
+                        except Exception:
+                            data = bytes(buf[:n])
+                    if transport._on_data:
+                        try:
+                            transport._on_data(bytes(data[:n]))
+                        except Exception as e:
+                            print(f"[transport-stream] on_data raised: {e}")
+                elif n == 0:
+                    # EOF
+                    transport._notify_closed()
+            elif event == NSStreamEventErrorOccurred:
+                err = stream.streamError()
+                print(f"[transport-stream] error: {err}")
+                transport._notify_closed()
+            elif event == NSStreamEventEndEncountered:
+                print("[transport-stream] end of stream")
+                transport._notify_closed()
+
+    _StreamDelegate = StreamDelegate
+    return _StreamDelegate
+
+
+class _NSStreamTransport:
+    """Bonjour-mediated transport. Opens NSStream pairs via
+    NSNetService.getInputStream:outputStream:. The connection flows through
+    Apple's brokered Bonjour path which historically did not require the
+    per-user Local Network permission. macOS 15 may have tightened this —
+    this transport is the experiment to find out."""
+
+    def __init__(self, ns_service):
+        self._service = ns_service
+        self._in = None
+        self._out = None
+        self._delegate = None
+        self._on_data = None
+        self._on_close = None
+        self._closed = False
+        self._loop_thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._opened = threading.Event()
+
+    def open(self) -> None:
+        ok, in_stream, out_stream = self._service.getInputStream_outputStream_(None, None)
+        if not ok or in_stream is None or out_stream is None:
+            raise IOError("NSNetService.getInputStream:outputStream: returned no streams")
+        self._in = in_stream
+        self._out = out_stream
+
+    def start(self, on_data, on_close) -> None:
+        self._on_data = on_data
+        self._on_close = on_close
+        self._closed = False
+        delegate_cls = _get_stream_delegate_class()
+        self._delegate = delegate_cls.alloc().init()
+        self._delegate._transport = self
+        self._in.setDelegate_(self._delegate)
+        self._out.setDelegate_(self._delegate)
+
+        # Run the streams on their own NSRunLoop in a background thread so
+        # we don't depend on the main run loop being pumped on time.
+        self._stop.clear()
+        self._opened.clear()
+        self._loop_thread = threading.Thread(target=self._run, daemon=True)
+        self._loop_thread.start()
+        # Wait for streams to register before any send attempt
+        self._opened.wait(timeout=2.0)
+
+    def _run(self) -> None:
+        from Foundation import NSRunLoop, NSDate, NSDefaultRunLoopMode
+        loop = NSRunLoop.currentRunLoop()
+        self._in.scheduleInRunLoop_forMode_(loop, NSDefaultRunLoopMode)
+        self._out.scheduleInRunLoop_forMode_(loop, NSDefaultRunLoopMode)
+        self._in.open()
+        self._out.open()
+        self._opened.set()
+        print("[transport-stream] streams opened on dedicated run loop")
+        while not self._stop.is_set():
+            loop.runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.1),
+            )
+        try:
+            self._in.close()
+            self._out.close()
+        except Exception:
+            pass
+        print("[transport-stream] run loop exited")
+
+    def send(self, data: bytes) -> None:
+        if not self._out:
+            raise IOError("Stream transport not open")
+        # NSOutputStream.write:maxLength: -> int (bytes written or -1)
+        n = self._out.write_maxLength_(data, len(data))
+        if n < 0:
+            err = self._out.streamError()
+            raise IOError(f"NSStream write failed: {err}")
+        if n != len(data):
+            # Short write — write the rest
+            remaining = data[n:]
+            while remaining:
+                n2 = self._out.write_maxLength_(remaining, len(remaining))
+                if n2 <= 0:
+                    err = self._out.streamError()
+                    raise IOError(f"NSStream short-write follow-up failed: {err}")
+                remaining = remaining[n2:]
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def _notify_closed(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._on_close:
+            try:
+                self._on_close()
+            except Exception:
+                pass
+
+
 def _arp_known_ipv4_neighbors() -> list[str]:
     """Parse the kernel ARP table and return all IPv4 neighbor IPs that have
     a resolved MAC (skip 'incomplete' entries). Catches direct-connected gear
@@ -289,7 +531,8 @@ def _get_browse_delegate_class():
                     print(f"[discovery] Resolved hostname {hostname} -> {ip}")
             except Exception as e:
                 print(f"[discovery] DNS resolve failed for {hostname}: {e}")
-            entry = {"name": name, "host": ip, "port": port}
+            entry = {"name": name, "host": ip, "port": port,
+                     "_nsnetservice": service}
             self._results.append(entry)
             print(f"[discovery] Found: {name} at {ip}:{port}")
             cb = self._callback
@@ -402,7 +645,8 @@ class VideohubConnection:
         num_inputs: int = NUM_IO,
         num_outputs: int = NUM_IO,
     ):
-        self.sock: socket.socket | None = None
+        self._transport = None
+        self._recv_buf: str = ""
         self.connected = False
         # Device info (populated from VIDEOHUB DEVICE: block)
         self.model_name: str = ""
@@ -423,46 +667,30 @@ class VideohubConnection:
         self.lock = threading.Lock()
 
     def connect(self, ip: str, retries: int = 3) -> bool | str:
-        """Connect to the Videohub with automatic retry.
-
-        Retries up to `retries` times with a 1-second delay between
-        attempts to handle transient network issues (adapter wake,
-        route not yet established, etc.).
-        Returns True on success, error string on failure.
-        """
+        """Connect via raw TCP socket. Used when no NSNetService is available
+        (manually-typed IP). Requires Local Network permission on macOS 15+."""
         import time as _time
-        # Trigger a quick Bonjour browse to ensure Local Network permission
-        # is granted before attempting raw TCP (macOS 15+ requirement)
         try:
             print("[connection] Pre-connect Bonjour probe (Local Network permission check)...")
             discover_videohubs(timeout=0.5)
         except Exception as e:
             print(f"[connection] Pre-connect probe failed: {e}")
+
         last_error = ""
         print(f"[connection] Connecting to {ip}:{VIDEOHUB_PORT} (up to {retries} attempts)...")
         for attempt in range(retries):
             try:
                 print(f"[connection] Attempt {attempt + 1}/{retries}...")
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(5)
-                self.sock.connect((ip, VIDEOHUB_PORT))
-                self.sock.settimeout(None)
-                self.connected = True
-                self._stop.clear()
-                t = threading.Thread(target=self._recv_loop, daemon=True)
-                t.start()
-                print(f"[connection] Connected to {ip}:{VIDEOHUB_PORT}")
+                t = _SocketTransport()
+                t.open(ip, VIDEOHUB_PORT, timeout=5)
+                self._attach_transport(t)
+                print(f"[connection] Connected to {ip}:{VIDEOHUB_PORT} via raw socket")
                 if self.on_connect:
                     self.on_connect()
                 return True
             except Exception as e:
                 last_error = str(e)
                 print(f"[connection] Attempt {attempt + 1} failed: {last_error}")
-                try:
-                    self.sock.close()
-                except Exception:
-                    pass
-                self.sock = None
                 if attempt < retries - 1:
                     print("[connection] Retrying in 1s...")
                     _time.sleep(1)
@@ -470,46 +698,87 @@ class VideohubConnection:
         self.connected = False
         return last_error
 
+    def connect_via_nsservice(self, ns_service) -> bool | str:
+        """Connect via NSNetService.getInputStream:outputStream:. Apple's
+        brokered Bonjour path may bypass macOS 15's per-user Local Network
+        permission gate. Falls back to raw socket on the resolved IP if the
+        stream open fails."""
+        try:
+            print("[connection] Connecting via NSNetService brokered streams...")
+            t = _NSStreamTransport(ns_service)
+            t.open()
+            self._attach_transport(t)
+            print("[connection] Connected via NSStream transport")
+            if self.on_connect:
+                self.on_connect()
+            return True
+        except Exception as e:
+            err = str(e)
+            print(f"[connection] NSStream connect failed: {err}; falling back to raw socket")
+            # Fallback: raw socket on resolved IP
+            try:
+                addresses = ns_service.addresses()
+                if addresses:
+                    for addr_data in addresses:
+                        raw = bytes(addr_data)
+                        # sockaddr_in: family(2), port(2), addr(4)
+                        if len(raw) >= 8 and raw[1] == 2:  # AF_INET
+                            ip_bytes = raw[4:8]
+                            ip = ".".join(str(b) for b in ip_bytes)
+                            return self.connect(ip)
+            except Exception as fallback_err:
+                print(f"[connection] Fallback IP extraction failed: {fallback_err}")
+            self.connected = False
+            return err
+
+    def _attach_transport(self, transport) -> None:
+        """Wire a freshly-opened transport into the receive pipeline."""
+        self._transport = transport
+        self.connected = True
+        self._stop.clear()
+        self._recv_buf = ""
+        transport.start(on_data=self._handle_bytes, on_close=self._handle_transport_close)
+
+    def _handle_bytes(self, data: bytes) -> None:
+        """Single byte-stream entry point — used by both transports."""
+        try:
+            self._recv_buf += data.decode("utf-8", errors="replace")
+        except Exception as e:
+            print(f"[connection] decode error: {e}")
+            return
+        while "\n\n" in self._recv_buf:
+            block, self._recv_buf = self._recv_buf.split("\n\n", 1)
+            try:
+                self._parse_block(block.strip())
+            except Exception as e:
+                print(f"[connection] parse error: {e}")
+
+    def _handle_transport_close(self) -> None:
+        if not self.connected and self._transport is None:
+            return
+        self.connected = False
+        if self.on_disconnect:
+            try:
+                self.on_disconnect()
+            except Exception:
+                pass
+
     def disconnect(self) -> None:
         print("[connection] Disconnecting...")
         self._stop.set()
         self.connected = False
-        if self.sock:
+        if self._transport:
             try:
-                self.sock.close()
+                self._transport.close()
             except Exception:
                 pass
-            self.sock = None
+            self._transport = None
         # Clear identification fields so a subsequent connection to a
-        # different device cannot use stale values. Without this, the next
-        # state-update callback fires with the previous hub's unique_id and
-        # _on_device_identified() saves the new device's state under the OLD
-        # device's registry uid, corrupting both entries.
+        # different device cannot use stale values.
         self.unique_id = ""
         self.model_name = ""
         self.friendly_name = ""
         self.device_present = False
-        if self.on_disconnect:
-            self.on_disconnect()
-
-    def _recv_loop(self) -> None:
-        print("[connection] Receive loop started")
-        buf = ""
-        while not self._stop.is_set():
-            try:
-                data = self.sock.recv(4096)
-                if not data:
-                    print("[connection] Remote closed connection")
-                    break
-                buf += data.decode("utf-8", errors="replace")
-                while "\n\n" in buf:
-                    block, buf = buf.split("\n\n", 1)
-                    self._parse_block(block.strip())
-            except Exception as e:
-                print(f"[connection] Receive loop error: {e}")
-                break
-        print("[connection] Receive loop ended")
-        self.connected = False
         if self.on_disconnect:
             self.on_disconnect()
 
@@ -612,7 +881,7 @@ class VideohubConnection:
             return
         cmd = f"VIDEO OUTPUT ROUTING:\n{output_idx} {input_idx}\n\n"
         try:
-            self.sock.sendall(cmd.encode("utf-8"))
+            self._transport.send(cmd.encode("utf-8"))
         except Exception as e:
             print(f"[connection] Send route failed: {e}")
 
@@ -623,7 +892,7 @@ class VideohubConnection:
             return
         cmd = f"INPUT LABELS:\n{idx} {label}\n\n"
         try:
-            self.sock.sendall(cmd.encode("utf-8"))
+            self._transport.send(cmd.encode("utf-8"))
         except Exception as e:
             print(f"[connection] Send input label failed: {e}")
 
@@ -634,7 +903,7 @@ class VideohubConnection:
             return
         cmd = f"OUTPUT LABELS:\n{idx} {label}\n\n"
         try:
-            self.sock.sendall(cmd.encode("utf-8"))
+            self._transport.send(cmd.encode("utf-8"))
         except Exception as e:
             print(f"[connection] Send output label failed: {e}")
 
