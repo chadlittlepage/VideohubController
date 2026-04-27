@@ -341,6 +341,8 @@ class InputLabelDelegate(NSObject):
             # Refresh LCD if this input is currently displayed
             if self.controller._lcd_selected_out is not None:
                 self.controller._update_lcd(self.controller._lcd_selected_out)
+            # Persist immediately so label edits survive a crash or hard quit
+            self.controller._save_session()
         # Only resign focus on Return (16), not Tab (17) or click-away
         movement = notification.userInfo().get("NSTextMovement", 0)
         if movement == 16:  # NSReturnTextMovement
@@ -375,6 +377,7 @@ class OutputLabelDelegate(NSObject):
             # Refresh LCD if this output is currently displayed
             if self.controller._lcd_selected_out is not None:
                 self.controller._update_lcd(self.controller._lcd_selected_out)
+            self.controller._save_session()
         movement = notification.userInfo().get("NSTextMovement", 0)
         if movement == 16:  # NSReturnTextMovement
             self.controller.performSelector_withObject_afterDelay_(
@@ -1517,12 +1520,10 @@ class AppController(NSObject):
                     print(f"[ui] Auto-detected model: {model_key} ({m_in}x{m_out})")
                     self.presets.settings["device_model"] = model_key
                     self.presets._write()
-                    # Refresh settings window and hotkey popups for new model
-                    invalidate_settings_window(self)
+                    # Refresh in place — Settings should not close on auto-detect.
                     self._refresh_preset_popup()
                     self._refresh_hotkey_indicators()
-                    refresh_hotkey_popups(self)
-                    refresh_font_sliders(self)
+                    refresh_settings_window(self)
                     # Update status bar with detected model
                     ip = self.ip_field.stringValue().strip()
                     self.set_status(f"Connected to {model_key} at {ip}")
@@ -1570,6 +1571,9 @@ class AppController(NSObject):
         print(f"[route] OUT {out_idx + 1} ({out_name}): IN {old_in + 1} -> IN {in_idx + 1} ({in_name}) (sent={'yes' if self.hub.connected else 'offline'})")
         self._show_crosshairs_at(out_idx, in_idx)
         self._update_lcd(out_idx)
+        # Persist immediately so a manual route survives a hard quit / crash
+        # without needing to wait for the next session-save trigger.
+        self._save_session()
 
     def hotkeyClicked_(self, sender):
         self.window.makeFirstResponder_(None)
@@ -1621,7 +1625,7 @@ class AppController(NSObject):
                 )
                 self._refresh_preset_popup()
                 self._refresh_hotkey_indicators()
-                invalidate_settings_window(self)
+                refresh_settings_window(self)
                 self.set_status(f"Saved preset: {name}")
                 print(f"[preset] Saved '{name}' ({self._num_inputs}x{self._num_outputs})")
 
@@ -1675,8 +1679,7 @@ class AppController(NSObject):
                 self.preset_popup.selectItemAtIndex_(i)
                 break
         self._refresh_hotkey_indicators()
-        invalidate_settings_window(self)
-        refresh_hotkey_popups(self)
+        refresh_settings_window(self)
         self.set_status(f'Renamed: "{old_name}" \u2192 "{new_name}"')
         print(f"[preset] Renamed '{old_name}' -> '{new_name}'")
 
@@ -1714,7 +1717,7 @@ class AppController(NSObject):
         self.presets.delete(name)
         self._refresh_preset_popup()
         self._refresh_hotkey_indicators()
-        invalidate_settings_window(self)
+        refresh_settings_window(self)
         self._save_session()
         self.set_status(f"Deleted preset: {name}")
         print(f"[preset] Deleted '{name}'")
@@ -2705,6 +2708,9 @@ class AppController(NSObject):
             self.presets._write()
             print(f"[device] Renamed '{old_name}' -> '{new_name}' (id={uid})")
         self._refresh_device_popup()
+        # Sync to open Settings window so the Custom Name field tracks the
+        # change (Device Names dropdown also updates).
+        refresh_settings_window(self)
         self.set_status(f'Device renamed: "{new_name}"')
 
     def deviceSelected_(self, sender):

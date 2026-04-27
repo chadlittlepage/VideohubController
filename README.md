@@ -29,8 +29,9 @@ Native macOS routing control application for Blackmagic Videohub SDI routers. Su
 - **Export/Import settings** -- save all configuration (including all devices) as JSON to transfer between machines
 - **Settings panel (Cmd+,)** -- device model, device names, font-size sliders, hotkey assignments, Keep on Top, Global Hotkeys, Reset per-model
 - **Console logging** -- every action logged with timestamps for remote debugging; export via Help menu
+- **Live Settings sync** -- Settings panel stays open across device switches and preset save/rename/delete; Device Names dropdown, Custom Name field, hotkey assignments, model dropdown and font sliders all update in place to follow the active device
 - **Window size persistence** -- window size and position remembered across restarts
-- **Full session persistence** -- everything saved per-device on quit and restored on launch
+- **Full session persistence** -- every change writes to disk immediately (settings widgets, label edits, matrix clicks, preset ops, discovery results); state restored per-device on launch
 - **Resizable and full screen** -- dark native Cocoa GUI; Cmd+F for full screen
 - **In-app manual** -- full user guide accessible from the Help menu
 

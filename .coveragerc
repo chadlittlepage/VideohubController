@@ -1,0 +1,25 @@
+[run]
+source = src/videohub_controller
+branch = True
+# Omit modules that need a Mac/PyObjC GUI or live hardware to exercise.
+# We measure coverage only on pure-logic modules so the floor is meaningful.
+omit =
+    */app.py
+    */settings_window.py
+    */manual_window.py
+    */about_window.py
+    */console_log.py
+    */connection.py
+    */__main__.py
+
+[report]
+# Floor enforced by CI step (--cov-fail-under). Excluded modules are
+# the GUI layers (PyObjC NSView code) which can't be unit-tested headlessly
+# in CI. Pure-logic modules (presets, connection, __init__) MUST hit the floor.
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    @objc.python_method
+show_missing = True
+skip_covered = False

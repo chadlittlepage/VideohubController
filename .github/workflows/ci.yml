@@ -11,41 +11,78 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install ruff
-
+      - run: pip install ruff
       - name: Ruff lint
-        run: ruff check src/
-
+        run: ruff check src/ tests/
       - name: Python syntax check
-        run: python -m py_compile src/videohub_controller/app.py &&
-             python -m py_compile src/videohub_controller/connection.py &&
-             python -m py_compile src/videohub_controller/presets.py &&
-             python -m py_compile src/videohub_controller/settings_window.py &&
-             python -m py_compile src/videohub_controller/manual_window.py &&
-             python -m py_compile src/videohub_controller/about_window.py &&
-             python -m py_compile src/videohub_controller/console_log.py &&
-             echo "All files compile OK"
+        run: |
+          python -m py_compile \
+            src/videohub_controller/app.py \
+            src/videohub_controller/connection.py \
+            src/videohub_controller/presets.py \
+            src/videohub_controller/settings_window.py \
+            src/videohub_controller/manual_window.py \
+            src/videohub_controller/about_window.py \
+            src/videohub_controller/console_log.py
+          echo "All files compile OK"
 
   test:
     runs-on: macos-latest
     needs: lint
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install pytest pyobjc-core pyobjc-framework-Cocoa
-
-      - name: Run tests
+      - run: pip install pytest pytest-cov pyobjc-core pyobjc-framework-Cocoa
+      - name: Run tests with coverage floor
         run: PYTHONPATH=src python -m pytest tests/ -v
+                --cov=videohub_controller
+                --cov-config=.coveragerc
+                --cov-report=term
+                --cov-fail-under=50
+
+  security:
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project + scanners
+        run: |
+          pip install -e .
+          pip install pip-audit bandit
+      - name: pip-audit (CVE scan on the actual deps we ship)
+        # Project deps now installed; audit the live env. --strict fails on
+        # any unfixed vuln. Pyobjc has had near-zero CVE history; this is
+        # mostly insurance for the day a transitive pulls in something bad.
+        run: pip-audit --desc --strict
+      - name: bandit (static security analysis)
+        # -ll -ii: only high-confidence, high-severity issues
+        run: bandit -r src/ -ll -ii
+      - name: gitleaks (secret scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-size-budget:
+    # The DMG isn't built in CI (would need notary creds + signing), but we
+    # can size-check anything that ships with the source. Caps creeping fat
+    # dependencies before they hit a real build.
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source size budget (≤ 5 MB checked-in src tree)
+        run: |
+          SIZE=$(du -sk src/ | awk '{print $1}')
+          echo "src/ size: ${SIZE} KB"
+          if [ "$SIZE" -gt 5120 ]; then
+            echo "::error::src/ is ${SIZE} KB, exceeds 5120 KB budget"
+            exit 1
+          fi

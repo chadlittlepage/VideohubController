@@ -142,6 +142,18 @@ if ! xcrun stapler validate "${_VERIFY_MNT}/${APP_NAME}.app" >/dev/null 2>&1; th
 fi
 hdiutil detach "${_VERIFY_MNT}" >/dev/null
 
+# DMG size budget: catch accidental fat dependencies before they ship.
+DMG_SIZE_BYTES=$(stat -f %z "${DMG_PATH}")
+DMG_SIZE_MB=$((DMG_SIZE_BYTES / 1048576))
+DMG_BUDGET_MB=30
+echo "==> DMG size: ${DMG_SIZE_MB} MB (budget ${DMG_BUDGET_MB} MB)"
+if [ "${DMG_SIZE_MB}" -gt "${DMG_BUDGET_MB}" ]; then
+    echo "ERROR: DMG is ${DMG_SIZE_MB} MB, exceeds ${DMG_BUDGET_MB} MB budget."
+    echo "       Likely an accidental dependency (numpy, tkinter, etc.) was bundled."
+    echo "       Inspect: du -sh dist/${APP_NAME}.app/Contents/Frameworks/* | sort -h"
+    exit 1
+fi
+
 # ----- 6. Sign + notarize the DMG ------------------------------------------
 
 echo "==> Signing the DMG..."

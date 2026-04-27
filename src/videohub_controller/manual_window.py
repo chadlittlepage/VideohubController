@@ -289,14 +289,34 @@ configuration.
 
 
 SESSION PERSISTENCE
-Everything saves per-device on quit and restores on relaunch:
+Everything you change is saved as you change it — there is no
+"Save" or "Apply" button to forget. The full per-device state
+that persists:
   IP address, labels, routing grid, selected preset, active
   hotkey, LCD state, font sizes, hotkey bindings, device model,
-  custom device name, window size and position
+  custom device name, window size and position, discovered
+  devices (registered on first Bonjour browse, kept across
+  relaunch even if you never connect to them)
 
-Each device has its own independent session. Switching devices
-saves the current state and loads the new device's state.
+Save points (each writes to disk immediately):
+  - Settings widget changes — sliders, toggles, hotkey
+    assignments, model dropdown, custom name
+  - Input/output label edits — saved on Return or focus-out
+  - Matrix cell click — routing change saved before the next
+    hardware echo
+  - Preset save / rename / delete — saved with the action
+  - Discovery — every found device added to the registry
+  - Quit — final session sweep on applicationWillTerminate
+
+Each device has its own independent state. Switching devices
+saves the current device's session and loads the new device's.
 Switching back restores exactly where you left off.
+
+Settings window stays open across all of these — switching
+devices, saving / renaming / deleting presets, renaming
+devices via right-click. The Device Names dropdown, Custom
+Name field, hotkey assignments, model dropdown and font
+sliders all update in place to reflect the active device.
 
 The window size and position are remembered across restarts.
 
