@@ -1380,7 +1380,16 @@ class AppController(NSObject):
 
     @objc.python_method
     def _do_connect(self, ip):
-        result = self.hub.connect(ip)
+        # Prefer the NSNetService brokered transport (may bypass macOS 15
+        # Local Network permission gate). Fall back to raw socket if no
+        # cached NSNetService matches this IP.
+        ns_service = self._lookup_ns_service_for_ip(ip)
+        if ns_service is not None:
+            print(f"[connection] Using NSNetService brokered path for {ip}")
+            result = self.hub.connect_via_nsservice(ns_service)
+        else:
+            print(f"[connection] No cached NSNetService for {ip}; using raw socket")
+            result = self.hub.connect(ip)
         if result is True:
             self.presets.save_ip(ip)
         else:
@@ -1389,6 +1398,14 @@ class AppController(NSObject):
                 str(result),
                 False,
             )
+
+    @objc.python_method
+    def _lookup_ns_service_for_ip(self, ip):
+        """Find a cached NSNetService whose resolved host matches this IP."""
+        for dev in getattr(self, '_discovered_devices', []):
+            if dev.get("host") == ip and dev.get("_nsnetservice") is not None:
+                return dev["_nsnetservice"]
+        return None
 
     def connectionFailed_(self, msg):
         self.connect_btn.setEnabled_(True)

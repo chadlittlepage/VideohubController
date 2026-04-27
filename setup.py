@@ -15,7 +15,7 @@ chad.littlepage@gmail.com
 from setuptools import setup
 
 APP_NAME = "Videohub Controller"
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 
 BUNDLE_ID = "com.chadlittlepage.videohubcontroller"
 
