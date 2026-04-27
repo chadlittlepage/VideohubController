@@ -81,8 +81,12 @@ The Discover button performs a fresh search:
     connection stays up and any new devices are added to the
     dropdown without auto-switching
 
-Discovery also triggers the macOS Local Network permission
-prompt, which helps avoid connection issues on macOS 15+.
+Discovered devices connect via Apple's brokered NSNetService
+streams, which on macOS 15+ bypasses the per-user Local Network
+permission gate entirely. Standard (non-admin) users can use
+the app without granting any extra permission, as long as they
+connect through Discover (or a device that Discover already
+found and saved).
 
 
 MULTI-DEVICE MANAGEMENT
@@ -394,17 +398,18 @@ Can't connect
   - Try pinging the IP from Terminal
   - The app retries 3 times automatically
 
-"No route to host" / Bonjour sees the device but Connect fails
-  - macOS 15+ requires per-user Local Network permission. An
-    admin install does NOT grant access for other user accounts.
-    Each user must enable it themselves.
-  - System Settings > Privacy & Security > Local Network >
-    toggle "Videohub Controller" ON. If it's already on, toggle
-    OFF then ON to clear a stale denial.
-  - The app sends a LAN ping at launch so the entry appears in
-    System Settings before you click Connect. If it's still
-    missing, click Connect once to register the request, then
-    check Settings again.
+"No route to host" when connecting via a manually-typed IP
+  - Bonjour-discovered devices connect through Apple's brokered
+    NSNetService streams and DO NOT require any extra permission,
+    even for non-admin users on macOS 15+.
+  - Manually-typed IPs use a raw TCP socket, which IS gated by
+    Local Network permission. Either:
+      a) Use Discover to find the device — the brokered path
+         skips the permission gate entirely.
+      b) Or grant Local Network once: System Settings > Privacy
+         & Security > Local Network > toggle "Videohub
+         Controller" ON. The app sends a LAN ping at launch so
+         the entry appears in the list before you click Connect.
 
 Hotkeys not working
   - Click the grid to deactivate text fields

@@ -10,6 +10,7 @@ Native macOS routing control application for Blackmagic Videohub SDI routers. Su
 
 - **All Videohub models** -- dynamic I/O from Mini 4x2 up to 80x80 (6,400 crosspoints); GUI rebuilds automatically when you switch models
 - **Auto-discovery on every interface** -- Bonjour browse on launch finds Videohubs across your LAN and direct-connected (link-local 169.254/16) interfaces; discovered devices persist across quit/relaunch
+- **No Local Network permission needed for Bonjour-discovered devices** -- connections to discovered Videohubs flow through Apple's brokered NSNetService streams, bypassing the macOS 15+ per-user Local Network permission gate. Standard (non-admin) users can install and use the app without granting any extra permissions
 - **Multi-device management** -- Device dropdown in the toolbar lists all known Videohubs; switch between devices with one click; each device saves its own config independently
 - **Custom device names** -- right-click the Device dropdown or use Settings to give each Videohub a custom name (e.g., "Edit Suite A"); names persist across restarts
 - **Per-device storage** -- presets, hotkey bindings, labels, font sizes, and session state are stored per hardware Unique ID; two identical models get separate configs
@@ -164,10 +165,11 @@ Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicat
 - Verify the Videohub is powered on and on the network
 - The app retries 3 times automatically
 
-**"No route to host" / Bonjour finds the device but Connect fails**
-- This is macOS 15's Local Network permission denial. Permissions are **per-user**, so an admin who installed the app does NOT grant access to other user accounts on the same machine.
-- For each user that needs to run the app: System Settings → Privacy & Security → Local Network → toggle "Videohub Controller" ON. (If it's already on, toggle OFF then ON — macOS sometimes caches a stale denial.)
-- The app triggers a LAN ping at launch, so the entry should appear in the list even before you click Connect. If it's still missing, click Connect once to force-register, then check the list again.
+**"No route to host" when connecting to a manually-typed IP**
+- Bonjour-discovered devices connect through Apple's brokered NSNetService path and don't need any extra permission.
+- Manually-typed IPs use a raw TCP socket, which on macOS 15+ requires per-user Local Network permission. Either:
+  - Use Discover instead — it'll find the device and connect via the brokered path, no permission needed.
+  - Or grant the permission once: System Settings → Privacy & Security → Local Network → toggle "Videohub Controller" ON. The app triggers a LAN ping at launch so the entry appears in the list before you click Connect.
 
 **Hotkeys not working**
 - Click the grid to deactivate text fields
