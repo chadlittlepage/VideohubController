@@ -80,6 +80,42 @@ def _enumerate_local_ipv4() -> list[tuple]:
     return pairs
 
 
+def prime_local_network_permission() -> None:
+    """Force macOS to register the app in Privacy & Security → Local Network.
+
+    On macOS 15+, an app only appears in the Local Network permission list
+    AFTER it has attempted to communicate with a private-IP LAN address.
+    Bonjour browse alone is insufficient — it must be a real socket attempt
+    to a private IPv4. Without this, a non-admin user who has never granted
+    permission cannot find the toggle in System Settings.
+
+    We open a non-blocking TCP socket to a benign private-network address
+    that is guaranteed to fail fast. The kernel's failure path is exactly
+    what registers us in the TCC list.
+    """
+    targets = [
+        "169.254.255.255",  # link-local broadcast
+        "192.168.255.255",  # common home/office reserved
+        "10.255.255.255",   # corp/datacenter reserved
+    ]
+    for ip in targets:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.05)
+            try:
+                s.connect((ip, 9))  # port 9 = Discard, conventional no-op
+            except Exception:
+                pass
+            try:
+                s.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    print("[permission] Local Network trigger sent — app should now appear "
+          "in System Settings → Privacy & Security → Local Network")
+
+
 def _arp_known_ipv4_neighbors() -> list[str]:
     """Parse the kernel ARP table and return all IPv4 neighbor IPs that have
     a resolved MAC (skip 'incomplete' entries). Catches direct-connected gear

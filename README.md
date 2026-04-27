@@ -164,8 +164,10 @@ Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicat
 - Verify the Videohub is powered on and on the network
 - The app retries 3 times automatically
 
-**"No route to host" after app update**
-- macOS 15 may invalidate Local Network permission after re-signing. The app opens System Settings automatically. Toggle Videohub Controller OFF then ON.
+**"No route to host" / Bonjour finds the device but Connect fails**
+- This is macOS 15's Local Network permission denial. Permissions are **per-user**, so an admin who installed the app does NOT grant access to other user accounts on the same machine.
+- For each user that needs to run the app: System Settings → Privacy & Security → Local Network → toggle "Videohub Controller" ON. (If it's already on, toggle OFF then ON — macOS sometimes caches a stale denial.)
+- The app triggers a LAN ping at launch, so the entry should appear in the list even before you click Connect. If it's still missing, click Connect once to force-register, then check the list again.
 
 **Hotkeys not working**
 - Click the grid to deactivate text fields

@@ -394,10 +394,17 @@ Can't connect
   - Try pinging the IP from Terminal
   - The app retries 3 times automatically
 
-"No route to host" after app update
-  - macOS 15 may invalidate Local Network permission after
-    re-signing. The app opens System Settings automatically.
-    Toggle Videohub Controller OFF then ON.
+"No route to host" / Bonjour sees the device but Connect fails
+  - macOS 15+ requires per-user Local Network permission. An
+    admin install does NOT grant access for other user accounts.
+    Each user must enable it themselves.
+  - System Settings > Privacy & Security > Local Network >
+    toggle "Videohub Controller" ON. If it's already on, toggle
+    OFF then ON to clear a stale denial.
+  - The app sends a LAN ping at launch so the entry appears in
+    System Settings before you click Connect. If it's still
+    missing, click Connect once to register the request, then
+    check Settings again.
 
 Hotkeys not working
   - Click the grid to deactivate text fields

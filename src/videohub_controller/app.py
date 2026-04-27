@@ -1396,16 +1396,50 @@ class AppController(NSObject):
         print(f"[connection] Failed: {msg_str}")
         if "No route to host" in msg_str or "Network is unreachable" in msg_str:
             self.set_status(
-                "Connection failed: No route to host. "
-                "Toggle Local Network OFF/ON — opening Settings..."
+                "Local Network permission needed for this user account."
             )
-            # Open System Settings directly to Local Network privacy pane
-            import subprocess
-            subprocess.Popen([
-                "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
-            ])
+            self._show_local_network_permission_dialog()
         else:
             self.set_status(f"Connection failed: {msg}")
+
+    @objc.python_method
+    def _show_local_network_permission_dialog(self):
+        """Explain the macOS 15 Local Network permission situation and open
+        System Settings. This permission is per-user — if an admin installed
+        the app, a standard user opening it for the first time will hit
+        EHOSTUNREACH on every TCP connect until they grant it themselves."""
+        from AppKit import NSAlert, NSAlertFirstButtonReturn, NSAppearance
+        import subprocess
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Local Network Permission Required")
+        alert.setInformativeText_(
+            "macOS blocks this app from connecting to your Videohub until "
+            "you grant Local Network permission for THIS user account. "
+            "Permissions are per-user, so an admin enabling it does not "
+            "carry over to other users.\n\n"
+            "Steps:\n"
+            "1. Click \"Open Settings\" below.\n"
+            "2. In Privacy & Security → Local Network, find "
+            "\"Videohub Controller\".\n"
+            "3. Toggle it ON. (If it's already on, toggle OFF then ON — "
+            "macOS sometimes caches a stale denial.)\n"
+            "4. Return to Videohub Controller and click Connect again.\n\n"
+            "If \"Videohub Controller\" is not listed at all, click "
+            "Connect once more after closing this dialog — macOS only "
+            "adds the entry after the app actually attempts a LAN connection."
+        )
+        alert.addButtonWithTitle_("Open Settings")
+        alert.addButtonWithTitle_("Cancel")
+        dark = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+        if dark:
+            alert.window().setAppearance_(dark)
+
+        if alert.runModal() == NSAlertFirstButtonReturn:
+            subprocess.Popen([
+                "open",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
+            ])
 
     @objc.python_method
     def _on_connect(self):
@@ -2819,6 +2853,13 @@ class AppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, notification):
         print("[app] applicationDidFinishLaunching")
+        # Trigger macOS Local Network registration BEFORE the UI starts so
+        # standard users (who never had an admin grant on their behalf) see
+        # "Videohub Controller" in System Settings → Privacy & Security →
+        # Local Network the first time they look. Without this trigger the
+        # entry doesn't appear until they hit a connection failure.
+        from videohub_controller.connection import prime_local_network_permission
+        prime_local_network_permission()
         self.controller = AppController.alloc().init()
         self.controller.show()
 
