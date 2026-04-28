@@ -1,4 +1,8 @@
-![Videohub Controller](screenshot.png)
+<p align="center">
+  <img src="screenshot.png" alt="Videohub Controller — main window" width="800">
+  <br>
+  <img src="screenshot_settings.png" alt="Settings panel" width="350">
+</p>
 
 # Videohub Controller
 
