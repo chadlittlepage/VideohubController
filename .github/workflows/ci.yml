@@ -61,7 +61,11 @@ jobs:
           pip install pyobjc-core pyobjc-framework-Cocoa
           pip install pip-audit bandit
       - name: pip-audit (CVE scan on the actual deps we ship)
-        run: pip-audit --desc --strict
+        # CVE-2026-3219 is in pip itself (tar/ZIP confusion during install).
+        # We ship a compiled .app — end users never run pip — so this is
+        # not in our threat model. Ignored explicitly until a fix ships
+        # upstream so we can spot any *real* new vuln.
+        run: pip-audit --desc --strict --ignore-vuln CVE-2026-3219
       - name: bandit (static security analysis)
         # -ll -ii: only high-confidence, high-severity issues
         run: bandit -r src/ -ll -ii
