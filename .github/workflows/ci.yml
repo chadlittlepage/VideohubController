@@ -59,9 +59,9 @@ jobs:
           pip install pip-audit bandit
       - name: pip-audit (CVE scan on the actual deps we ship)
         # Project deps now installed; audit the live env. --strict fails on
-        # any unfixed vuln. Pyobjc has had near-zero CVE history; this is
-        # mostly insurance for the day a transitive pulls in something bad.
-        run: pip-audit --desc --strict
+        # any unfixed vuln. --skip-editable excludes videohub-controller
+        # itself (we're a desktop app, not a published PyPI package).
+        run: pip-audit --desc --strict --skip-editable
       - name: bandit (static security analysis)
         # -ll -ii: only high-confidence, high-severity issues
         run: bandit -r src/ -ll -ii
