@@ -53,15 +53,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install project + scanners
+      - name: Install runtime deps + scanners
+        # Don't install our own package (we're a desktop app, not on PyPI).
+        # Just install the runtime deps we ship so pip-audit scans the
+        # actual surface a user would have at runtime.
         run: |
-          pip install -e .
+          pip install pyobjc-core pyobjc-framework-Cocoa
           pip install pip-audit bandit
       - name: pip-audit (CVE scan on the actual deps we ship)
-        # Project deps now installed; audit the live env. --strict fails on
-        # any unfixed vuln. --skip-editable excludes videohub-controller
-        # itself (we're a desktop app, not a published PyPI package).
-        run: pip-audit --desc --strict --skip-editable
+        run: pip-audit --desc --strict
       - name: bandit (static security analysis)
         # -ll -ii: only high-confidence, high-severity issues
         run: bandit -r src/ -ll -ii
