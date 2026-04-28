@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="screenshot.png" alt="Videohub Controller — main window" width="800">
-  <br>
-  <img src="screenshot_settings.png" alt="Settings panel" width="350">
-</p>
+![Videohub Controller — main window](screenshot.png)
 
 # Videohub Controller
 
@@ -144,6 +140,10 @@ Assign presets to keys 1-9 and 0 in Settings. Press the key or click the indicat
 
 - **Export Settings** (Shift+Cmd+E) -- save all config as JSON (includes all devices)
 - **Import Settings** (Shift+Cmd+I) -- load config from JSON
+
+### Settings panel
+
+<img src="screenshot_settings.png" alt="Settings panel" width="350">
 
 ## Keyboard Shortcuts
 
